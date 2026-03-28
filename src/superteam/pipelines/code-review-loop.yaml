@@ -1,0 +1,29 @@
+name: code-review-loop
+version: "1"
+description: Builder writes code, evaluator reviews it, loop until pass.
+
+loop:
+  max_iterations: 5
+  min_score: 0.85
+  consecutive_passes: 1
+  on_max_iterations: fail
+
+agents:
+  builder:
+    provider: claude_code
+    model: claude-opus-4-1
+    system: |
+      You are an expert software engineer.
+      Write clean, tested, well-documented code.
+    bare: true
+  evaluator:
+    provider: claude_api
+    model: claude-sonnet-4-6
+    temperature: 0.1
+    system: |
+      You are a strict senior code reviewer.
+      Return JSON only: {status, feedback, score}
+
+input:
+  goal: null
+  plan: null

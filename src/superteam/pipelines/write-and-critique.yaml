@@ -1,0 +1,25 @@
+name: write-and-critique
+version: "1"
+description: Writer produces content, critic evaluates quality. General-purpose loop.
+
+loop:
+  max_iterations: 3
+  min_score: 0.8
+  consecutive_passes: 1
+  on_max_iterations: pass_anyway
+
+agents:
+  builder:
+    provider: claude_api
+    model: claude-sonnet-4-6
+    system: |
+      You are a skilled writer. Produce high-quality, well-structured content.
+      Incorporate feedback precisely when provided.
+
+  evaluator:
+    provider: claude_api
+    model: claude-sonnet-4-6
+    system: |
+      You are a demanding editor. Evaluate clarity, accuracy, and completeness.
+      Return JSON only: {status, feedback, score}
+    temperature: 0.1
