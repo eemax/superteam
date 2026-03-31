@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import sys
-from dataclasses import asdict
 
 import typer
 
@@ -37,7 +35,7 @@ def audit_command(
     agent = AgentSpec(provider=provider, system="", config=merged_config)
     prov = instantiate_provider(agent)
 
-    system = "You are a rigorous QA evaluator. Return JSON only."
+    system = "You are a rigorous QA evaluator. Return only the canonical Markdown audit report."
     prompt = f"""## Goal
 {goal}
 
@@ -45,19 +43,17 @@ def audit_command(
 {content}
 
 ## Your task
-Evaluate the output against the goal. Be precise and critical.
-Respond ONLY as JSON:
-{{
-  "status": "pass" | "fail" | "retry",
-  "feedback": "specific, actionable feedback",
-  "score": 0.0-1.0
-}}"""
+Evaluate the output against the goal as a software engineering audit. Be precise and critical.
+"""
 
-    raw = prov.complete(system, prompt)
+    from superteam.core.loop import audit_report_format_instructions, parse_verdict
 
-    from superteam.core.loop import parse_verdict
+    raw = prov.complete(system, prompt + "\n" + audit_report_format_instructions())
+
     try:
         verdict = parse_verdict(raw, evaluator=prov, system=system)
-        typer.echo(json.dumps(asdict(verdict), indent=2))
-    except ValueError:
-        typer.echo(raw)
+        typer.echo(verdict.to_markdown())
+    except ValueError as exc:
+        typer.echo(f"Could not parse evaluator audit report: {exc}", err=True)
+        typer.echo(raw, err=True)
+        raise typer.Exit(1)

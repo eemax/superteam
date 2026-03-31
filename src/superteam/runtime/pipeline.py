@@ -15,7 +15,6 @@ from superteam.runtime.config import deep_merge, filter_dataclass_kwargs, load_g
 BUILTIN_PIPELINES = {
     "code-review-loop": "code-review-loop.yaml",
     "qa-loop": "qa-loop.yaml",
-    "write-and-critique": "write-and-critique.yaml",
 }
 
 
@@ -134,7 +133,7 @@ def prepare_run(
         builder=instantiate_provider(builder_agent),
         evaluator=instantiate_provider(evaluator_agent),
         builder_system=builder_agent.system or "You are an expert builder. Execute the plan precisely.",
-        evaluator_system=evaluator_agent.system or "You are a rigorous QA evaluator. Return JSON only.",
+        evaluator_system=evaluator_agent.system or "You are a rigorous QA evaluator. Return only the canonical Markdown audit report.",
         goal=resolved_goal,
         plan=resolved_plan,
         builder_provider_name=spec.builder.provider,

@@ -6,28 +6,61 @@ import json
 import time
 import uuid
 
+import yaml
+
 
 OUTPUT_INLINE_LIMIT = 8_000
 OUTPUT_PREVIEW_LIMIT = 300
+AUDIT_SECTION_TITLES = (
+    "Context",
+    "Verdict",
+    "Findings Summary",
+    "Findings",
+    "Recommendations",
+    "Audit Details",
+    "Scope Exclusions",
+)
+STATUS_TO_AUDIT_VERDICT = {
+    "pass": "PASS",
+    "retry": "PASS WITH CONDITIONS",
+    "fail": "FAIL",
+}
 
 
 @dataclass
 class Verdict:
     status: Literal["pass", "fail", "retry"]
+    audit_verdict: Literal["PASS", "PASS WITH CONDITIONS", "FAIL"]
     feedback: str
-    score: float | None = None
-    next_step: str | None = None
+    score: float
+    next_steps: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Verdict":
         return cls(
             status=data["status"],
-            feedback=data.get("feedback", ""),
-            score=data.get("score"),
-            next_step=data.get("next_step"),
-            metadata=data.get("metadata", {}),
+            audit_verdict=data["audit_verdict"],
+            feedback=data["feedback"],
+            score=float(data["score"]),
+            next_steps=list(data["next_steps"]),
+            metadata=dict(data["metadata"]),
         )
+
+    def to_markdown(self) -> str:
+        frontmatter = yaml.safe_dump(
+            {
+                "status": self.status,
+                "audit_verdict": self.audit_verdict,
+                "score": self.score,
+                "next_steps": self.next_steps,
+                "metadata": self.metadata,
+            },
+            sort_keys=False,
+            allow_unicode=False,
+        ).strip()
+        body = self.feedback.strip()
+        return f"---\n{frontmatter}\n---\n\n{body}\n"
 
 
 @dataclass
@@ -63,6 +96,7 @@ class LoopState:
     output_ref: str | None = None
     output_preview: str = ""
     feedback: str | None = None
+    next_steps: list[str] = field(default_factory=list)
     context: dict[str, Any] = field(default_factory=dict)
     history: list[IterationRecord] = field(default_factory=list)
 
@@ -83,6 +117,7 @@ class LoopState:
             output_ref=data.get("output_ref"),
             output_preview=data.get("output_preview", ""),
             feedback=data.get("feedback"),
+            next_steps=data.get("next_steps", []),
             context=data.get("context", {}),
             history=[IterationRecord.from_dict(item) for item in data.get("history", [])],
         )

@@ -28,11 +28,9 @@ def test_load_builtin_pipeline_qa_loop():
     assert spec.evaluator.provider == "openrouter"
 
 
-def test_load_builtin_pipeline_write_and_critique():
-    spec = load_pipeline("write-and-critique")
-    assert spec.name == "write-and-critique"
-    assert spec.builder.provider == "claude_api"
-    assert spec.evaluator.provider == "claude_api"
+def test_removed_builtin_pipeline_is_not_loadable():
+    with pytest.raises(FileNotFoundError):
+        load_pipeline("write-and-critique")
 
 
 def test_load_pipeline_by_file_path(tmp_path):
@@ -89,8 +87,11 @@ agents:
     provider: fake_evaluator
     responses:
       - status: pass
-        feedback: ok
+        audit_verdict: PASS
         score: 1.0
+        next_steps: []
+        metadata: {}
+        feedback: ok
 input:
   goal: default-goal
 """.strip()

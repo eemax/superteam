@@ -22,5 +22,5 @@ agents:
     model: openai/gpt-4o
     system: |
       You are a rigorous QA evaluator. Be precise and critical.
-      Return JSON only: {status, feedback, score}
+      Return only the canonical Markdown audit report with YAML frontmatter.
     temperature: 0.1

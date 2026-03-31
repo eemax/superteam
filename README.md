@@ -1,6 +1,6 @@
 # superteam
 
-A Python 3.12+ harness for non-interactive builder/evaluator LLM agent loops.
+A Python 3.12+ harness for non-interactive builder/evaluator loops focused on software-engineering code review and QA audits.
 
 ## What's here
 
@@ -22,13 +22,12 @@ uv sync --extra cli --extra claude --extra dev
 
 | Pipeline | Builder | Evaluator | Description |
 |----------|---------|-----------|-------------|
-| `code-review-loop` | claude_code | claude_api | Builder writes code, evaluator reviews |
-| `qa-loop` | claude_code | openrouter | Cross-provider QA |
-| `write-and-critique` | claude_api | claude_api | Writer produces content, critic evaluates |
+| `code-review-loop` | claude_code | claude_api | Builder writes code, evaluator produces a senior-review audit |
+| `qa-loop` | claude_code | openrouter | Cross-provider QA audit for software engineering work |
 
 ```bash
 superteam run code-review-loop --goal "Write a Python CLI that converts JSON to CSV"
-superteam run write-and-critique --goal "Write a technical blog post about async Python"
+superteam run qa-loop --goal "Audit this API client for retry, timeout, and auth-handling issues"
 ```
 
 ## CLI commands
@@ -40,6 +39,24 @@ superteam status <session-id> [--format json|text]
 superteam result <session-id> [--format text|json]
 superteam sessions list [--status done|running|failed] [--format text|json]
 superteam audit --goal "..." --provider claude_api [--model ...]  # pipe content to stdin
+```
+
+Evaluators return a canonical Markdown audit report with YAML frontmatter:
+
+```markdown
+---
+status: retry
+audit_verdict: PASS WITH CONDITIONS
+score: 0.82
+next_steps:
+  - Add regression tests for token expiry
+metadata: {}
+---
+
+# Agent Audit
+
+## 1. Context
+...
 ```
 
 ## Session model
@@ -73,11 +90,11 @@ uv sync --extra openrouter   # openrouter
 ## Library usage
 
 ```python
-from superteam import LoopState, LoopConfig, Observer, Session, run_loop
+from superteam import LoopState, LoopConfig, Observer, run_loop
 from superteam.providers.testing import StaticBuilderProvider, StaticBuilderConfig
 
 builder = StaticBuilderProvider(StaticBuilderConfig(outputs=["hello world"]))
-evaluator = ...  # any object with complete(system, prompt, state) -> str
+evaluator = ...  # any object with complete(system, prompt, state) -> canonical audit markdown
 
 state = LoopState(session_id="st-example", goal="Build something", plan="Do it")
 final = run_loop(builder, evaluator, state, config=LoopConfig(max_iterations=3))

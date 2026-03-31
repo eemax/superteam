@@ -3,11 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
-import json
 import re
+from textwrap import dedent
 import time
 
-from .contracts import IterationRecord, LoopState, OUTPUT_INLINE_LIMIT, OUTPUT_PREVIEW_LIMIT, Verdict
+import yaml
+
+from .contracts import (
+    AUDIT_SECTION_TITLES,
+    OUTPUT_INLINE_LIMIT,
+    OUTPUT_PREVIEW_LIMIT,
+    STATUS_TO_AUDIT_VERDICT,
+    IterationRecord,
+    LoopState,
+    Verdict,
+)
 from .observe import Observer
 from .session import Session
 
@@ -119,7 +129,10 @@ def build_builder_prompt(state: LoopState, artifact_store: ArtifactStore | None 
         f"## Plan\n{state.plan}\n",
     ]
     if state.feedback:
-        parts.append(f"## Feedback from previous attempt\n{state.feedback}\n")
+        parts.append(f"## Previous audit report\n{state.feedback}\n")
+    if state.next_steps:
+        next_steps = "\n".join(f"- {step}" for step in state.next_steps)
+        parts.append(f"## Required next steps\n{next_steps}\n")
     if state.iteration > 0:
         output_text = _load_output_text(state, artifact_store)
         parts.append(f"## Previous output\n{output_text}\n")
@@ -137,20 +150,40 @@ def build_evaluator_prompt(state: LoopState, artifact_store: ArtifactStore | Non
 {output_text}
 
 ## Your task
-Evaluate the output against the goal. Be precise and critical.
-Respond ONLY as JSON:
-{{
-  "status": "pass" | "fail" | "retry",
-  "feedback": "specific, actionable feedback for the builder",
-  "score": 0.0-1.0
-}}"""
+Evaluate the output against the goal as a software engineering audit. Be precise and critical.
+
+{audit_report_format_instructions()}"""
 
 
-def _salvage_json(raw: str) -> str:
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
-    cleaned = cleaned.replace("```", "").strip()
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    return match.group(0) if match else cleaned
+def audit_report_format_instructions() -> str:
+    return dedent(
+        """\
+        Return ONLY the canonical Markdown audit report with YAML frontmatter and no code fences.
+
+        Frontmatter fields:
+        - status: pass | fail | retry
+        - audit_verdict: PASS | PASS WITH CONDITIONS | FAIL
+        - score: numeric 0.0-1.0
+        - next_steps: YAML list of concrete action items (must be non-empty for fail or retry)
+        - metadata: YAML mapping
+
+        Status mapping:
+        - pass -> PASS
+        - retry -> PASS WITH CONDITIONS
+        - fail -> FAIL
+
+        Required body structure after the frontmatter:
+        # Agent Audit
+        ## 1. Context
+        ## 2. Verdict
+        ## 3. Findings Summary
+        ## 4. Findings
+        ## 5. Recommendations
+        ## 6. Audit Details
+        ## 7. Scope Exclusions
+
+        The Markdown body is the audit report. Do not return JSON. Do not omit any required section."""
+    )
 
 
 def parse_verdict(
@@ -160,34 +193,43 @@ def parse_verdict(
     system: str = "",
 ) -> Verdict:
     def _try_parse(text: str) -> Verdict:
-        data = json.loads(text)
-        verdict = Verdict.from_dict(data)
-        if verdict.status not in {"pass", "fail", "retry"}:
-            raise ValueError(f"Unsupported verdict status: {verdict.status}")
+        frontmatter, body = _split_frontmatter(text)
+        data = yaml.safe_load(frontmatter)
+        if not isinstance(data, dict):
+            raise ValueError("Verdict frontmatter must parse to a mapping")
+        _validate_audit_body(body)
+        verdict = Verdict.from_dict({**data, "feedback": body})
+        _validate_verdict(verdict)
         return verdict
 
-    for attempt in (raw, _salvage_json(raw)):
-        try:
-            return _try_parse(attempt)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            continue
+    last_error: Exception | None = None
+
+    raw = _strip_code_fences(raw)
+
+    try:
+        return _try_parse(raw)
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        last_error = exc
 
     if config.parse_repair_prompt and evaluator is not None:
         raw_preview = raw[:2000]
         repair_prompt = (
-            "Your previous response could not be parsed as JSON. "
+            "Your previous response could not be parsed as the required Markdown audit report. "
             "Here is your original response:\n\n"
             f"{raw_preview}\n\n"
-            "Please fix the above into a valid JSON object "
-            "with keys status, feedback, and score.\n"
-            '{"status": "pass"|"fail"|"retry", "feedback": "...", "score": 0.0}'
+            "Please rewrite it into the required canonical Markdown audit format.\n\n"
+            f"{audit_report_format_instructions()}"
         )
         repaired = evaluator.complete(system, repair_prompt)
         try:
-            return _try_parse(_salvage_json(repaired))
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            pass
+            return _try_parse(repaired)
+        except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+            last_error = exc
 
+    if isinstance(last_error, ValueError):
+        raise last_error
+    if last_error is not None:
+        raise ValueError(str(last_error)) from last_error
     raise ValueError(f"Could not parse verdict after all salvage attempts. Raw: {raw[:200]}")
 
 
@@ -197,7 +239,7 @@ def step_once(
     state: LoopState,
     config: LoopConfig = LoopConfig(),
     builder_system: str = "You are an expert builder. Execute the plan precisely.",
-    evaluator_system: str = "You are a rigorous QA evaluator. Return JSON only.",
+    evaluator_system: str = "You are a rigorous QA evaluator. Return only the canonical Markdown audit report.",
     artifact_store: ArtifactStore | None = None,
 ) -> tuple[LoopState, Verdict]:
     artifact_store = artifact_store or InlineArtifactStore()
@@ -231,6 +273,7 @@ def step_once(
     next_state = replace(
         next_state,
         feedback=verdict.feedback,
+        next_steps=verdict.next_steps,
         history=[*next_state.history, record],
     )
     return next_state, verdict
@@ -244,7 +287,7 @@ def run_loop(
     observer: Observer | None = None,
     session: Session | None = None,
     builder_system: str = "You are an expert builder. Execute the plan precisely.",
-    evaluator_system: str = "You are a rigorous QA evaluator. Return JSON only.",
+    evaluator_system: str = "You are a rigorous QA evaluator. Return only the canonical Markdown audit report.",
 ) -> LoopState:
     obs = observer or Observer(session=session)
     artifact_store: ArtifactStore = SessionArtifactStore(session) if session else InlineArtifactStore()
@@ -288,25 +331,25 @@ def run_loop(
                 "spilled": state.output_ref is not None,
             },
         )
-        obs.emit(
-            "verdict",
-            {
-                "iteration": state.iteration,
-                "status": verdict.status,
-                "score": verdict.score,
-                "feedback": verdict.feedback,
-            },
-        )
+        verdict_payload = {
+            "iteration": state.iteration,
+            "status": verdict.status,
+            "audit_verdict": verdict.audit_verdict,
+            "score": verdict.score,
+        }
+        summary = _summarize_audit_report(verdict.feedback)
+        next_steps = _summarize_next_steps(verdict.next_steps)
+        if summary:
+            verdict_payload["summary"] = summary
+        if next_steps:
+            verdict_payload["next_steps"] = next_steps
+        obs.emit("verdict", verdict_payload)
 
         if session:
             session.checkpoint(state, verdict)
 
-        score_ok = (
-            verdict.score is not None
-            and config.min_score is not None
-            and verdict.score >= config.min_score
-        )
-        if verdict.status == "pass" or score_ok:
+        score_ok = config.min_score is None or verdict.score >= config.min_score
+        if verdict.status == "pass" and score_ok:
             passes += 1
             if passes >= config.consecutive_passes:
                 obs.emit("loop_end", {"reason": "pass", "iterations": state.iteration})
@@ -376,3 +419,83 @@ def _transient_exceptions() -> tuple[type[BaseException], ...]:
         pass
 
     return tuple(dict.fromkeys(exceptions))
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_nl = stripped.index("\n")
+        stripped = stripped[first_nl + 1 :]
+    if stripped.endswith("```"):
+        stripped = stripped[: -3]
+    return stripped.strip()
+
+
+def _split_frontmatter(raw: str) -> tuple[str, str]:
+    text = raw.strip()
+    if not text.startswith("---"):
+        raise ValueError("Verdict must start with YAML frontmatter")
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("Verdict must open with a frontmatter delimiter")
+
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            frontmatter = "\n".join(lines[1:index]).strip()
+            body = "\n".join(lines[index + 1 :]).strip()
+            if not frontmatter:
+                raise ValueError("Verdict frontmatter is empty")
+            if not body:
+                raise ValueError("Verdict body is empty")
+            return frontmatter, body
+
+    raise ValueError("Verdict frontmatter is missing a closing delimiter")
+
+
+def _validate_verdict(verdict: Verdict) -> None:
+    if verdict.status not in STATUS_TO_AUDIT_VERDICT:
+        raise ValueError(f"Unsupported verdict status: {verdict.status}")
+    expected_audit_verdict = STATUS_TO_AUDIT_VERDICT[verdict.status]
+    if verdict.audit_verdict != expected_audit_verdict:
+        raise ValueError(
+            f"status={verdict.status!r} requires audit_verdict={expected_audit_verdict!r}, "
+            f"got {verdict.audit_verdict!r}"
+        )
+    if not isinstance(verdict.score, (int, float)):
+        raise ValueError("Verdict score must be numeric")
+    if not isinstance(verdict.metadata, dict):
+        raise ValueError("Verdict metadata must be a mapping")
+    if not isinstance(verdict.next_steps, list) or any(not isinstance(step, str) or not step.strip() for step in verdict.next_steps):
+        raise ValueError("Verdict next_steps must be a list of non-empty strings")
+    if verdict.status != "pass" and not verdict.next_steps:
+        raise ValueError("Verdict next_steps must be non-empty for fail or retry")
+
+
+def _validate_audit_body(body: str) -> None:
+    titles = [
+        re.sub(r"^\d+\.\s+", "", match.group(1)).strip()
+        for match in re.finditer(r"^##\s+(.+?)\s*$", body, re.MULTILINE)
+    ]
+    if titles != list(AUDIT_SECTION_TITLES):
+        raise ValueError(
+            "Verdict body must contain the required sections in order: "
+            + ", ".join(AUDIT_SECTION_TITLES)
+        )
+
+
+def _summarize_audit_report(body: str, limit: int = 160) -> str:
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("-") or line.startswith(">"):
+            continue
+        if len(line) <= limit:
+            return line
+        return line[: limit - 1] + "…"
+    return ""
+
+
+def _summarize_next_steps(next_steps: list[str], limit: int = 2) -> str:
+    if not next_steps:
+        return ""
+    return "; ".join(next_steps[:limit])

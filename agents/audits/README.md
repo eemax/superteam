@@ -9,6 +9,8 @@ Suggested filename format:
 A good audit note usually includes:
 
 - scope reviewed
+- a committed verdict
 - findings or confirmation that no issues were found
 - residual risks
 - follow-up actions or test gaps
+- traceability details such as files, tests, tools, and timestamp

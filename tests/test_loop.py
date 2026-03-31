@@ -1,14 +1,79 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 
 import pytest
 
-from superteam.core.contracts import LoopState, OUTPUT_INLINE_LIMIT, Verdict
-from superteam.core.loop import LoopConfig, SessionArtifactStore, parse_verdict, run_loop, step_once
+from superteam.core.contracts import OUTPUT_INLINE_LIMIT, LoopState, Verdict
+from superteam.core.loop import LoopConfig, SessionArtifactStore, build_builder_prompt, build_evaluator_prompt, parse_verdict, run_loop, step_once
 from superteam.core.observe import Observer
 from superteam.core.session import Session
+
+
+STATUS_TO_AUDIT_VERDICT = {
+    "pass": "PASS",
+    "retry": "PASS WITH CONDITIONS",
+    "fail": "FAIL",
+}
+
+
+def make_audit_body(summary: str, audit_verdict: str, next_steps: list[str]) -> str:
+    before_ship = "\n".join(f"- {step}" for step in next_steps) if next_steps else "- None."
+    return (
+        "# Agent Audit\n\n"
+        "## 1. Context\n"
+        f"{summary}\n\n"
+        "## 2. Verdict\n"
+        f"**{audit_verdict}**\n\n"
+        f"**Rationale:** {summary}\n\n"
+        "**Confidence:** High\n\n"
+        "## 3. Findings Summary\n"
+        "- **P1 - Critical:** 0\n"
+        "- **P2 - Major:** 0\n"
+        "- **P3 - Minor:** 0\n\n"
+        "## 4. Findings\n"
+        "No additional findings.\n\n"
+        "## 5. Recommendations\n"
+        "### Before Ship\n"
+        f"{before_ship}\n\n"
+        "### Before Next Milestone\n"
+        "- None.\n\n"
+        "### Longer-Term Improvements\n"
+        "- None.\n\n"
+        "## 6. Audit Details\n"
+        "- **Files reviewed:** []\n"
+        "- **Tests run:** []\n"
+        "- **Results:** 0 passed, 0 failed, 0 skipped\n"
+        "- **Tools used:** [\"static review\"]\n"
+        "- **Method:** static review\n"
+        "- **Environment:** tests\n"
+        "- **Reference:** fixture\n"
+        "- **Audited by:** tests\n"
+        "- **Timestamp:** 2026-03-31T00:00:00+07:00\n\n"
+        "## 7. Scope Exclusions\n"
+        "- None."
+    )
+
+
+def make_verdict_markdown(
+    status: str,
+    score: float,
+    summary: str,
+    next_steps: list[str] | None = None,
+    audit_verdict: str | None = None,
+    body: str | None = None,
+) -> str:
+    next_steps = next_steps or []
+    audit_verdict = audit_verdict or STATUS_TO_AUDIT_VERDICT[status]
+    feedback = body or make_audit_body(summary, audit_verdict, next_steps)
+    return Verdict(
+        status=status,
+        audit_verdict=audit_verdict,
+        feedback=feedback,
+        score=score,
+        next_steps=next_steps,
+        metadata={},
+    ).to_markdown()
 
 
 class SequenceBuilder:
@@ -28,30 +93,33 @@ class SequenceBuilder:
         return True
 
 
-class RecordingEvaluator:
-    def __init__(self, response: str):
-        self.response = response
+class SequenceEvaluator:
+    def __init__(self, responses: list[str]):
+        self.responses = responses
         self.prompts: list[str] = []
         self.calls = 0
         self.last_tokens: dict[str, int] = {}
 
     def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
+        index = min(self.calls, len(self.responses) - 1)
+        response = self.responses[index]
         self.prompts.append(prompt)
         self.calls += 1
-        self.last_tokens = {"input": len(prompt), "output": len(self.response), "total": len(prompt) + len(self.response)}
-        return self.response
+        self.last_tokens = {"input": len(prompt), "output": len(response), "total": len(prompt) + len(response)}
+        return response
 
     def health(self) -> bool:
         return True
 
 
 class RepairEvaluator:
-    def __init__(self):
+    def __init__(self, response: str):
+        self.response = response
         self.calls = 0
 
     def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
         self.calls += 1
-        return json.dumps({"status": "retry", "feedback": "fix json", "score": 0.2})
+        return self.response
 
     def health(self) -> bool:
         return True
@@ -79,7 +147,7 @@ def test_step_once_spills_large_output_and_evaluator_reads_full_artifact():
     session = Session.create(builder_provider="fake_builder", eval_provider="fake_evaluator", pipeline="test")
     builder_output = "A" * (OUTPUT_INLINE_LIMIT + 250)
     builder = SequenceBuilder([builder_output])
-    evaluator = RecordingEvaluator('{"status": "pass", "feedback": "ok", "score": 1.0}')
+    evaluator = SequenceEvaluator([make_verdict_markdown("pass", 1.0, "ok")])
     state = LoopState(session_id=session.id, goal="Review this", plan="Do it")
 
     next_state, verdict = step_once(
@@ -97,23 +165,56 @@ def test_step_once_spills_large_output_and_evaluator_reads_full_artifact():
     assert next_state.history[-1].tokens["builder"]["output"] == len(builder_output)
 
 
-def test_parse_verdict_repairs_invalid_json_once():
-    evaluator = RepairEvaluator()
+def test_parse_verdict_repairs_invalid_markdown_once():
+    evaluator = RepairEvaluator(make_verdict_markdown("retry", 0.2, "fix markdown", ["Fix markdown format"]))
 
     verdict = parse_verdict(
-        "not json at all",
+        "not markdown at all",
         config=LoopConfig(parse_repair_prompt=True),
         evaluator=evaluator,
-        system="Return JSON only.",
+        system="Return only the canonical Markdown audit report.",
     )
 
-    assert verdict == Verdict(status="retry", feedback="fix json", score=0.2)
+    assert verdict.status == "retry"
+    assert verdict.audit_verdict == "PASS WITH CONDITIONS"
+    assert verdict.next_steps == ["Fix markdown format"]
     assert evaluator.calls == 1
+
+
+def test_parse_verdict_rejects_json():
+    with pytest.raises(ValueError):
+        parse_verdict('{"status": "pass", "score": 1.0}')
+
+
+def test_parse_verdict_rejects_mismatched_status_and_audit_verdict():
+    raw = make_verdict_markdown("pass", 1.0, "looks good", audit_verdict="FAIL")
+
+    with pytest.raises(ValueError, match="requires audit_verdict"):
+        parse_verdict(raw, config=LoopConfig(parse_repair_prompt=False))
+
+
+def test_parse_verdict_rejects_missing_required_sections():
+    raw = """---
+status: pass
+audit_verdict: PASS
+score: 1.0
+next_steps: []
+metadata: {}
+---
+
+# Agent Audit
+
+## 1. Context
+Reviewed.
+"""
+
+    with pytest.raises(ValueError, match="required sections"):
+        parse_verdict(raw, config=LoopConfig(parse_repair_prompt=False))
 
 
 def test_run_loop_retries_transient_errors_and_succeeds():
     builder = FlakyBuilder(failures=2, output="stable output")
-    evaluator = RecordingEvaluator('{"status": "pass", "feedback": "great", "score": 0.99}')
+    evaluator = SequenceEvaluator([make_verdict_markdown("pass", 0.99, "great")])
     state = LoopState(session_id="st-retry", goal="goal", plan="plan")
 
     final = run_loop(
@@ -129,9 +230,9 @@ def test_run_loop_retries_transient_errors_and_succeeds():
     assert final.history[-1].verdict.status == "pass"
 
 
-def test_run_loop_uses_min_score_as_exit_condition():
-    builder = SequenceBuilder(["draft"])
-    evaluator = RecordingEvaluator('{"status": "retry", "feedback": "almost", "score": 0.95}')
+def test_run_loop_does_not_finish_on_high_score_without_pass():
+    builder = SequenceBuilder(["draft", "draft", "draft"])
+    evaluator = SequenceEvaluator([make_verdict_markdown("retry", 0.95, "almost", ["Address remaining issues"])])
     session = Session.create(builder_provider="fake_builder", eval_provider="fake_evaluator", pipeline="score")
     state = LoopState(session_id=session.id, goal="goal", plan="plan")
 
@@ -144,13 +245,37 @@ def test_run_loop_uses_min_score_as_exit_condition():
         session=session,
     )
 
-    assert final.iteration == 1
+    assert final.iteration == 3
+    assert session.load_meta().status == "failed"
+
+
+def test_run_loop_requires_min_score_before_pass_completes():
+    builder = SequenceBuilder(["draft one", "draft two"])
+    evaluator = SequenceEvaluator(
+        [
+            make_verdict_markdown("pass", 0.7, "not enough yet"),
+            make_verdict_markdown("pass", 0.95, "ready now"),
+        ]
+    )
+    session = Session.create(builder_provider="fake_builder", eval_provider="fake_evaluator", pipeline="score")
+    state = LoopState(session_id=session.id, goal="goal", plan="plan")
+
+    final = run_loop(
+        builder,
+        evaluator,
+        state,
+        config=LoopConfig(max_iterations=3, min_score=0.9),
+        observer=Observer(session=session),
+        session=session,
+    )
+
+    assert final.iteration == 2
     assert session.load_meta().status == "done"
 
 
 def test_run_loop_marks_session_failed_on_max_iterations():
     builder = SequenceBuilder(["draft one", "draft two"])
-    evaluator = RecordingEvaluator('{"status": "fail", "feedback": "still wrong", "score": 0.1}')
+    evaluator = SequenceEvaluator([make_verdict_markdown("fail", 0.1, "still wrong", ["Fix the blocking issue"])])
     session = Session.create(builder_provider="fake_builder", eval_provider="fake_evaluator", pipeline="max")
     state = LoopState(session_id=session.id, goal="goal", plan="plan")
 
@@ -167,10 +292,7 @@ def test_run_loop_marks_session_failed_on_max_iterations():
     assert session.load_meta().status == "failed"
 
 
-def test_builder_prompt_loads_full_artifact_when_spilled():
-    """Builder should see the full previous artifact, not just the spill marker."""
-    from superteam.core.loop import build_builder_prompt, InlineArtifactStore
-
+def test_builder_prompt_loads_full_artifact_and_next_steps_when_spilled():
     large_output = "B" * 10_000
     session = Session.create(builder_provider="test", eval_provider="test", pipeline="test")
     artifact_store = SessionArtifactStore(session)
@@ -183,17 +305,19 @@ def test_builder_prompt_loads_full_artifact_when_spilled():
         iteration=1,
         output=inline,
         output_ref=ref,
+        feedback=make_audit_body("reviewed", "PASS WITH CONDITIONS", ["Add tests"]),
+        next_steps=["Add tests"],
     )
 
     prompt = build_builder_prompt(state, artifact_store)
     assert large_output in prompt
+    assert "## Previous audit report" in prompt
+    assert "## Required next steps" in prompt
+    assert "- Add tests" in prompt
     assert "[artifact spilled" not in prompt.split("## Previous output")[1]
 
 
 def test_both_prompts_see_same_full_artifact():
-    """Builder and evaluator should both see the full artifact text."""
-    from superteam.core.loop import build_builder_prompt, build_evaluator_prompt
-
     large_output = "C" * 10_000
     session = Session.create(builder_provider="test", eval_provider="test", pipeline="test")
     artifact_store = SessionArtifactStore(session)
@@ -212,15 +336,18 @@ def test_both_prompts_see_same_full_artifact():
     evaluator_prompt = build_evaluator_prompt(state, artifact_store)
     assert large_output in builder_prompt
     assert large_output in evaluator_prompt
+    assert "canonical Markdown audit report" in evaluator_prompt
 
 
 def test_run_loop_token_capture_in_history():
     builder = SequenceBuilder(["output"])
-    evaluator = RecordingEvaluator('{"status": "pass", "feedback": "ok", "score": 1.0}')
+    evaluator = SequenceEvaluator([make_verdict_markdown("pass", 1.0, "ok")])
     state = LoopState(session_id="st-tokens", goal="goal", plan="plan")
 
     final = run_loop(
-        builder, evaluator, state,
+        builder,
+        evaluator,
+        state,
         config=LoopConfig(max_iterations=1),
         observer=Observer(),
     )
@@ -238,17 +365,18 @@ def test_parse_verdict_repair_prompt_includes_original_response():
 
         def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
             self.last_prompt = prompt
-            return '{"status": "pass", "feedback": "fixed", "score": 0.8}'
+            return make_verdict_markdown("pass", 0.8, "fixed")
 
     evaluator = CapturingEvaluator()
-    raw = "This is not JSON but has some structure {broken"
+    raw = "This is not valid markdown audit output"
     verdict = parse_verdict(
         raw,
         config=LoopConfig(parse_repair_prompt=True),
         evaluator=evaluator,
-        system="Return JSON only.",
+        system="Return only the canonical Markdown audit report.",
     )
     assert raw in evaluator.last_prompt
+    assert "canonical Markdown audit format" in evaluator.last_prompt
     assert verdict.status == "pass"
 
 
@@ -262,11 +390,11 @@ def test_run_loop_stop_on_error_false_finishes_session():
         def health(self) -> bool:
             return True
 
-    evaluator = RecordingEvaluator('{"status":"pass","feedback":"ok","score":1.0}')
+    evaluator = SequenceEvaluator([make_verdict_markdown("pass", 1.0, "ok")])
     session = Session.create(builder_provider="test", eval_provider="test", pipeline="test")
     state = LoopState(session_id=session.id, goal="goal", plan="plan")
 
-    final = run_loop(
+    run_loop(
         FailingBuilder(),
         evaluator,
         state,
@@ -276,3 +404,18 @@ def test_run_loop_stop_on_error_false_finishes_session():
     )
 
     assert session.load_meta().status == "failed"
+
+
+def test_parse_verdict_accepts_integer_score():
+    md = make_verdict_markdown("pass", 1, "all good")
+    verdict = parse_verdict(md)
+    assert verdict.score == 1.0
+    assert verdict.status == "pass"
+
+
+def test_parse_verdict_strips_code_fences():
+    inner = make_verdict_markdown("pass", 0.95, "looks good")
+    fenced = f"```markdown\n{inner}\n```"
+    verdict = parse_verdict(fenced)
+    assert verdict.status == "pass"
+    assert verdict.score == 0.95

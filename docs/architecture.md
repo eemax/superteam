@@ -2,7 +2,7 @@
 
 ## Overview
 
-`superteam` is a Python harness for running non-interactive builder/evaluator loops. A pipeline defines two agents, the runtime instantiates their providers, the core loop coordinates iterations, and the session layer persists state and artifacts on disk.
+`superteam` is a Python harness for running non-interactive builder/evaluator loops for software-engineering code review and QA audits. A pipeline defines two agents, the runtime instantiates their providers, the core loop coordinates iterations, and the session layer persists state and artifacts on disk.
 
 ## Package Layout
 
@@ -44,12 +44,12 @@ flowchart TD
 1. `src/superteam/cli/run.py` resolves a pipeline reference and optional goal/plan overrides.
 2. `prepare_run()` loads the pipeline YAML, merges global provider config, and instantiates concrete provider classes.
 3. A `Session` is created or reopened for background execution.
-4. `run_loop()` drives iterations until a pass/fail condition or max-iteration policy is reached.
+4. `run_loop()` drives iterations until a passing audit or max-iteration policy is reached.
 5. The final state is persisted, and the CLI prints the session id plus resolved output for foreground runs.
 
 ### `audit` command path
 
-`src/superteam/cli/audit.py` skips the builder loop entirely. It reads piped content from stdin, instantiates a single evaluator provider, and runs the same verdict parsing logic used by the main loop.
+`src/superteam/cli/audit.py` skips the builder loop entirely. It reads piped content from stdin, instantiates a single evaluator provider, and emits the same canonical Markdown audit report parsed by the main loop.
 
 ## Core Data Model
 
@@ -61,17 +61,20 @@ The mutable state for a run. It carries:
 - goal and plan
 - current iteration number
 - latest output or spilled artifact reference
-- evaluator feedback
+- previous audit report and next steps
 - optional context payload
 - iteration history
 
 ### `Verdict`
 
-The evaluator response contract. The core loop expects JSON with:
+The evaluator response contract is a canonical Markdown audit report with YAML frontmatter. The parsed verdict includes:
 
 - `status`: `pass`, `fail`, or `retry`
-- `feedback`: actionable guidance for the next builder pass
-- `score`: optional numeric confidence/quality score
+- `audit_verdict`: `PASS`, `PASS WITH CONDITIONS`, or `FAIL`
+- `score`: numeric quality/confidence score
+- `next_steps`: structured follow-up actions for the next builder pass
+- `metadata`: freeform machine-readable audit metadata
+- `feedback`: the Markdown audit body with the seven required sections
 
 ### `IterationRecord`
 
@@ -103,6 +106,7 @@ Each session directory follows this shape:
 - Event logs are append-only JSONL.
 - Large builder outputs spill to `artifacts/` once they cross `OUTPUT_INLINE_LIMIT`.
 - `state.json` always represents the latest known loop state.
+- Verdict checkpoints remain JSON files, but their contents store the parsed Markdown-audit verdict fields.
 
 ## Configuration And Pipelines
 

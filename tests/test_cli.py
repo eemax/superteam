@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import time
 
 from typer.testing import CliRunner
 
+import superteam.runtime.pipeline as runtime_pipeline
 from superteam.cli.main import app
 from superteam.core.session import Session
 
@@ -13,10 +13,33 @@ from superteam.core.session import Session
 runner = CliRunner()
 
 
+def _yaml_response(
+    status: str,
+    audit_verdict: str,
+    score: float,
+    feedback: str,
+    next_steps: list[str] | None = None,
+) -> str:
+    next_steps = next_steps or []
+    if next_steps:
+        next_steps_block = "        next_steps:\n" + "".join(f"          - {step}\n" for step in next_steps)
+    else:
+        next_steps_block = "        next_steps: []\n"
+    return (
+        f"      - status: {status}\n"
+        f"        audit_verdict: {audit_verdict}\n"
+        f"        score: {score}\n"
+        f"{next_steps_block}"
+        "        metadata: {}\n"
+        f"        feedback: {feedback}\n"
+    )
+
+
 def test_cli_run_status_watch_and_result(tmp_path):
     pipeline_path = tmp_path / "pipeline.yaml"
     pipeline_path.write_text(
-        """
+        (
+            """
 name: test-loop
 loop:
   max_iterations: 3
@@ -29,15 +52,14 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: fail
-        feedback: fix it
-        score: 0.1
-      - status: pass
-        feedback: looks good
-        score: 0.95
+"""
+            + _yaml_response("fail", "FAIL", 0.1, "fix it", ["Fix it"])
+            + _yaml_response("pass", "PASS", 0.95, "looks good")
+            + """
 input:
   plan: "follow the spec"
-""".strip(),
+"""
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -55,6 +77,7 @@ input:
     assert watch_result.exit_code == 0
     assert "step=builder" in watch_result.output
     assert "status=pass" in watch_result.output
+    assert "audit_verdict=PASS" in watch_result.output
 
     result_text = runner.invoke(app, ["result", session_id])
     assert result_text.exit_code == 0
@@ -70,7 +93,8 @@ input:
 def test_cli_detach_writes_pid_and_completes(tmp_path):
     pipeline_path = tmp_path / "detach.yaml"
     pipeline_path.write_text(
-        """
+        (
+            """
 name: detach-loop
 loop:
   max_iterations: 1
@@ -82,10 +106,9 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: pass
-        feedback: ok
-        score: 1.0
-""".strip(),
+"""
+            + _yaml_response("pass", "PASS", 1.0, "ok")
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -109,7 +132,8 @@ agents:
 def test_cli_sessions_list_returns_created_sessions(tmp_path):
     pipeline_path = tmp_path / "list-test.yaml"
     pipeline_path.write_text(
-        """
+        (
+            """
 name: list-loop
 loop:
   max_iterations: 1
@@ -121,10 +145,9 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: pass
-        feedback: ok
-        score: 1.0
-""".strip(),
+"""
+            + _yaml_response("pass", "PASS", 1.0, "ok")
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -152,7 +175,8 @@ agents:
 def test_cli_status_text_format(tmp_path):
     pipeline_path = tmp_path / "status-text.yaml"
     pipeline_path.write_text(
-        """
+        (
+            """
 name: status-loop
 loop:
   max_iterations: 1
@@ -164,10 +188,9 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: pass
-        feedback: ok
-        score: 1.0
-""".strip(),
+"""
+            + _yaml_response("pass", "PASS", 1.0, "ok")
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -185,7 +208,8 @@ def test_cli_result_returns_full_spilled_artifact(tmp_path):
     long_output = "x" * 9001
     pipeline_path = tmp_path / "spill.yaml"
     pipeline_path.write_text(
-        f"""
+        (
+            f"""
 name: spill-loop
 loop:
   max_iterations: 1
@@ -197,10 +221,9 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: pass
-        feedback: ok
-        score: 1.0
-""".strip(),
+"""
+            + _yaml_response("pass", "PASS", 1.0, "ok")
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -214,11 +237,6 @@ agents:
 
 
 def test_cli_run_respects_global_config(tmp_path, monkeypatch):
-    """CLI run should pick up global config via prepare_run().
-
-    Precedence: pipeline YAML > global config. The pipeline does not set
-    outputs, so the global config value should fill in.
-    """
     monkeypatch.setenv("SUPERTEAM_HOME", str(tmp_path))
 
     config_path = tmp_path / "config.toml"
@@ -229,7 +247,8 @@ def test_cli_run_respects_global_config(tmp_path, monkeypatch):
 
     pipeline_path = tmp_path / "pipe.yaml"
     pipeline_path.write_text(
-        """
+        (
+            """
 name: global-test
 loop:
   max_iterations: 1
@@ -239,10 +258,9 @@ agents:
   evaluator:
     provider: fake_evaluator
     responses:
-      - status: pass
-        feedback: ok
-        score: 1.0
-""".strip(),
+"""
+            + _yaml_response("pass", "PASS", 1.0, "ok")
+        ).strip(),
         encoding="utf-8",
     )
 
@@ -252,5 +270,35 @@ agents:
 
     result = runner.invoke(app, ["result", session_id])
     assert result.exit_code == 0
-    # Global config fills in outputs not set by the pipeline
     assert result.output.strip() == "global-output"
+
+
+def test_cli_audit_outputs_markdown():
+    audit_result = runner.invoke(
+        app,
+        ["audit", "--goal", "Confirm this is ship-ready", "--provider", "fake_evaluator"],
+        input="builder output",
+    )
+
+    assert audit_result.exit_code == 0, audit_result.output
+    assert audit_result.output.startswith("---\nstatus: pass\n")
+    assert "audit_verdict: PASS" in audit_result.output
+    assert "# Agent Audit" in audit_result.output
+
+
+def test_cli_audit_fails_on_invalid_output(monkeypatch):
+    class BrokenProvider:
+        def complete(self, system: str, prompt: str) -> str:
+            return "not markdown"
+
+    monkeypatch.setattr(runtime_pipeline, "instantiate_provider", lambda agent: BrokenProvider())
+
+    audit_result = runner.invoke(
+        app,
+        ["audit", "--goal", "Confirm this is ship-ready", "--provider", "fake_evaluator"],
+        input="builder output",
+    )
+
+    assert audit_result.exit_code == 1
+    assert "Could not parse evaluator audit report:" in audit_result.output
+    assert "Verdict must start with YAML frontmatter" in audit_result.output

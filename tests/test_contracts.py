@@ -4,7 +4,14 @@ from superteam.core.contracts import Event, IterationRecord, LoopState, Verdict
 
 
 def test_loop_state_round_trip_preserves_history():
-    verdict = Verdict(status="pass", feedback="looks good", score=0.91, metadata={"source": "test"})
+    verdict = Verdict(
+        status="pass",
+        audit_verdict="PASS",
+        feedback="# Agent Audit\n\n## 1. Context\nReviewed.\n\n## 2. Verdict\n**PASS**\n\n**Rationale:** Looks good.\n\n**Confidence:** High\n\n## 3. Findings Summary\n- **P1 - Critical:** 0\n- **P2 - Major:** 0\n- **P3 - Minor:** 0\n\n## 4. Findings\nNo open findings.\n\n## 5. Recommendations\n### Before Ship\n- None.\n\n### Before Next Milestone\n- None.\n\n### Longer-Term Improvements\n- None.\n\n## 6. Audit Details\n- **Files reviewed:** []\n- **Tests run:** []\n- **Results:** 0 passed, 0 failed, 0 skipped\n- **Tools used:** [\"static review\"]\n- **Method:** static review\n- **Environment:** tests\n- **Reference:** fixture\n- **Audited by:** tests\n- **Timestamp:** 2026-03-31T00:00:00+07:00\n\n## 7. Scope Exclusions\n- None.",
+        score=0.91,
+        next_steps=[],
+        metadata={"source": "test"},
+    )
     record = IterationRecord(
         iteration=1,
         ts_start=1.0,
@@ -23,6 +30,7 @@ def test_loop_state_round_trip_preserves_history():
         output_ref="/tmp/artifact",
         output_preview="preview",
         feedback="ship it",
+        next_steps=["Run regression tests"],
         context={"attempts": 1},
         history=[record],
     )
