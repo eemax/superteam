@@ -1,6 +1,6 @@
 name: code-review-loop
 version: "1"
-description: Builder writes code, evaluator reviews it, loop until pass.
+description: Builder writes code, auditor reviews it, loop until pass.
 
 loop:
   max_iterations: 5
@@ -10,16 +10,14 @@ loop:
 
 agents:
   builder:
-    provider: claude_code
+    module: claude_code
     model: claude-opus-4-1
     system: |
       You are an expert software engineer.
       Write clean, tested, well-documented code.
     bare: true
-  evaluator:
-    provider: claude_api
-    model: claude-sonnet-4-6
-    temperature: 0.1
+  auditor:
+    module: codex
     system: |
       You are a strict senior code reviewer.
       Produce a decisive software engineering audit report.

@@ -1,15 +1,14 @@
 from dataclasses import dataclass
-from pathlib import Path
 
 from superteam.runtime.config import deep_merge, filter_dataclass_kwargs, load_global_config
 
 
 def test_deep_merge_nested():
-    a = {"providers": {"claude": {"model": "old"}}, "loop": {"max": 5}}
-    b = {"providers": {"claude": {"temp": 0.1}}, "loop": {"max": 10}}
+    a = {"modules": {"codex": {"model": "old"}}, "loop": {"max": 5}}
+    b = {"modules": {"codex": {"profile": "default"}}, "loop": {"max": 10}}
     result = deep_merge(a, b)
     assert result == {
-        "providers": {"claude": {"model": "old", "temp": 0.1}},
+        "modules": {"codex": {"model": "old", "profile": "default"}},
         "loop": {"max": 10},
     }
 
@@ -28,9 +27,9 @@ def test_load_global_config_missing_file(tmp_path):
 
 def test_load_global_config_reads_toml(tmp_path):
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[providers.openrouter]\nmodel = "gpt-4o"\n')
+    cfg.write_text('[modules.codex]\nmodel = "gpt-5-codex"\n')
     result = load_global_config(cfg)
-    assert result["providers"]["openrouter"]["model"] == "gpt-4o"
+    assert result["modules"]["codex"]["model"] == "gpt-5-codex"
 
 
 def test_filter_dataclass_kwargs():

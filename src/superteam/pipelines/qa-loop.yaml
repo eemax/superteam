@@ -1,6 +1,6 @@
 name: qa-loop
 version: "1"
-description: Cross-provider QA — builder and evaluator from different providers.
+description: Cross-module QA with a full builder module and a full auditor module.
 
 loop:
   max_iterations: 5
@@ -10,17 +10,15 @@ loop:
 
 agents:
   builder:
-    provider: claude_code
-    model: claude-opus-4-1
+    module: codex
     system: |
       You are an expert builder. Execute the plan precisely.
       Produce complete, working output.
-    # max_turns is not supported by Claude Code print mode
 
-  evaluator:
-    provider: openrouter
-    model: openai/gpt-4o
+  auditor:
+    module: claude_code
+    model: claude-opus-4-1
     system: |
-      You are a rigorous QA evaluator. Be precise and critical.
+      You are a rigorous QA auditor. Be precise and critical.
       Return only the canonical Markdown audit report with YAML frontmatter.
-    temperature: 0.1
+    bare: true

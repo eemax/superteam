@@ -87,6 +87,47 @@ class IterationRecord:
 
 
 @dataclass
+class InvocationRecord:
+    index: int
+    iteration: int
+    module: str
+    role: Literal["builder", "auditor"]
+    attempt: int
+    started_at: float
+    ended_at: float
+    duration_seconds: float
+    cwd: str | None
+    system: str = ""
+    system_ref: str | None = None
+    prompt: str = ""
+    prompt_ref: str | None = None
+    output: str = ""
+    output_ref: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InvocationRecord":
+        return cls(
+            index=data["index"],
+            iteration=data["iteration"],
+            module=data["module"],
+            role=data["role"],
+            attempt=data.get("attempt", 1),
+            started_at=data["started_at"],
+            ended_at=data["ended_at"],
+            duration_seconds=data["duration_seconds"],
+            cwd=data.get("cwd"),
+            system=data.get("system", ""),
+            system_ref=data.get("system_ref"),
+            prompt=data.get("prompt", ""),
+            prompt_ref=data.get("prompt_ref"),
+            output=data.get("output", ""),
+            output_ref=data.get("output_ref"),
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class LoopState:
     session_id: str
     goal: str
@@ -131,8 +172,8 @@ class LoopState:
 class SessionMeta:
     session_id: str
     pipeline: str | None
-    builder_provider: str
-    eval_provider: str
+    builder_module: str
+    auditor_module: str
     status: Literal["running", "done", "failed", "paused"]
     created_at: float = field(default_factory=time.time)
     ended_at: float | None = None

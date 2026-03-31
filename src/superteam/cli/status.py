@@ -20,8 +20,8 @@ def status_command(
         "iteration": state.iteration if state is not None else meta.iterations,
         "final_score": meta.final_score,
         "pipeline": meta.pipeline,
-        "builder_provider": meta.builder_provider,
-        "eval_provider": meta.eval_provider,
+        "builder_module": meta.builder_module,
+        "auditor_module": meta.auditor_module,
     }
     pid = session.load_run_pid()
     if pid is not None:

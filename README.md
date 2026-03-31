@@ -1,29 +1,34 @@
 # superteam
 
-A Python 3.12+ harness for non-interactive builder/evaluator loops focused on software-engineering code review and QA audits.
+A Python 3.12+ harness for non-interactive builder/auditor loops across full agent modules.
 
 ## What's here
 
 - **Core loop engine** — `step_once()` and `run_loop()` with artifact spilling, verdict parsing, and transient retry
-- **File-backed sessions** — atomic persistence under `~/.superteam/sessions/`, append-only JSONL event logs
-- **Provider adapters** — Claude API, Claude Code (subprocess), OpenRouter
+- **File-backed sessions** — atomic persistence under `~/.superteam/sessions/`, append-only JSONL event logs, invocation records, and per-iteration checkpoints
+- **Full module adapters** — Codex CLI and Claude Code CLI
 - **YAML pipeline loader** — typed `PipelineSpec`, built-in pipelines as package resources
-- **Global config** — `~/.superteam/config.toml` with deep-merge precedence (global < pipeline < CLI)
+- **Global config** — `~/.superteam/config.toml` with deep-merge precedence (`global < pipeline < CLI`)
 - **CLI** — `run`, `watch`, `status`, `result`, `sessions list`, `audit`
-- **Deterministic testing** — fake providers, `SUPERTEAM_HOME` isolation, no live API needed
+- **Deterministic testing** — fake builder/auditor modules, `SUPERTEAM_HOME` isolation, no live model APIs required
 
 ## Quick start
 
 ```bash
-uv sync --extra cli --extra claude --extra dev
+uv sync --extra cli --extra dev
 ```
+
+Install the external CLIs you want to use separately:
+
+- `codex`
+- `claude`
 
 ## Built-in pipelines
 
-| Pipeline | Builder | Evaluator | Description |
-|----------|---------|-----------|-------------|
-| `code-review-loop` | claude_code | claude_api | Builder writes code, evaluator produces a senior-review audit |
-| `qa-loop` | claude_code | openrouter | Cross-provider QA audit for software engineering work |
+| Pipeline | Builder | Auditor | Description |
+|----------|---------|---------|-------------|
+| `code-review-loop` | `claude_code` | `codex` | Builder writes code, auditor produces a strict software review |
+| `qa-loop` | `codex` | `claude_code` | Cross-module QA audit for software engineering work |
 
 ```bash
 superteam run code-review-loop --goal "Write a Python CLI that converts JSON to CSV"
@@ -38,10 +43,10 @@ superteam watch <session-id> [--format pretty|json] [--follow/--no-follow]
 superteam status <session-id> [--format json|text]
 superteam result <session-id> [--format text|json]
 superteam sessions list [--status done|running|failed] [--format text|json]
-superteam audit --goal "..." --provider claude_api [--model ...]  # pipe content to stdin
+superteam audit --goal "..." --module codex [--model ...]  # pipe content to stdin
 ```
 
-Evaluators return a canonical Markdown audit report with YAML frontmatter:
+Auditors return a canonical Markdown audit report with YAML frontmatter:
 
 ```markdown
 ---
@@ -62,42 +67,57 @@ metadata: {}
 ## Session model
 
 Each session creates `~/.superteam/sessions/<id>/` with:
-- `meta.json` — status, timestamps, provider names
-- `state.json` — full `LoopState` with history
+
+- `meta.json` — status, timestamps, pipeline, builder/auditor module names
+- `state.json` — full `LoopState` with iteration history
 - `events.jsonl` — append-only event log
 - `iterations/` — per-iteration state and verdict snapshots
-- `artifacts/` — spilled outputs (> 8KB)
-- `workspace/` — working directory for subprocess providers
+- `invocations/` — persisted module call records with timing, prompts, outputs, and spill refs
+- `artifacts/` — spilled outputs and large invocation payloads
+- `run.pid` — PID for detached runs
 
 Sessions use explicit lifecycle: `Session.create()` for new, `Session.open()` for existing.
 
-## Provider support
+## Module support
 
-| Provider | Type | Dependency | Env var |
-|----------|------|------------|---------|
-| `claude_api` | Anthropic SDK | `anthropic` | `ANTHROPIC_API_KEY` |
-| `claude_code` | Subprocess | `claude` CLI | — |
-| `openrouter` | HTTP API | `httpx` | `OPENROUTER_API_KEY` |
-| `fake_builder` | Testing | — | — |
-| `fake_evaluator` | Testing | — | — |
-
-Install provider dependencies via extras:
-```bash
-uv sync --extra claude       # claude_api
-uv sync --extra openrouter   # openrouter
-```
+| Module | Type | Dependency |
+|--------|------|------------|
+| `codex` | CLI runtime | `codex` binary |
+| `claude_code` | CLI runtime | `claude` binary |
+| `fake_builder` | Testing | — |
+| `fake_auditor` | Testing | — |
 
 ## Library usage
 
 ```python
-from superteam import LoopState, LoopConfig, Observer, run_loop
-from superteam.providers.testing import StaticBuilderProvider, StaticBuilderConfig
+from superteam import LoopConfig, LoopState, Observer, run_loop
+from superteam.modules.testing import StaticAuditorModule, StaticAuditorModuleConfig, StaticBuilderModule, StaticBuilderModuleConfig
 
-builder = StaticBuilderProvider(StaticBuilderConfig(outputs=["hello world"]))
-evaluator = ...  # any object with complete(system, prompt, state) -> canonical audit markdown
+builder = StaticBuilderModule(StaticBuilderModuleConfig(outputs=["hello world"]))
+auditor = StaticAuditorModule(
+    StaticAuditorModuleConfig(
+        responses=[
+            {
+                "status": "pass",
+                "audit_verdict": "PASS",
+                "score": 1.0,
+                "next_steps": [],
+                "metadata": {},
+                "feedback": "Looks good.",
+            }
+        ]
+    )
+)
 
 state = LoopState(session_id="st-example", goal="Build something", plan="Do it")
-final = run_loop(builder, evaluator, state, config=LoopConfig(max_iterations=3))
+final = run_loop(
+    builder,
+    auditor,
+    state,
+    config=LoopConfig(max_iterations=3),
+    builder_module_name="fake_builder",
+    auditor_module_name="fake_auditor",
+)
 ```
 
 ## Global config
@@ -105,9 +125,11 @@ final = run_loop(builder, evaluator, state, config=LoopConfig(max_iterations=3))
 Optional `~/.superteam/config.toml`:
 
 ```toml
-[providers.openrouter]
-api_key = "sk-or-..."
-model = "openai/gpt-4o"
+[modules.codex]
+model = "gpt-5-codex"
+
+[modules.claude_code]
+model = "claude-opus-4-1"
 
 [loop]
 max_iterations = 10
@@ -121,4 +143,4 @@ Precedence: CLI args > pipeline YAML > global config.
 uv run pytest
 ```
 
-Tests use `SUPERTEAM_HOME` isolation — no live API calls needed. Live smoke tests are opt-in via `SUPERTEAM_RUN_LIVE_SMOKE=1`.
+Tests use `SUPERTEAM_HOME` isolation and deterministic fake modules. Live CLI smoke tests are opt-in via `SUPERTEAM_RUN_LIVE_SMOKE=1`.

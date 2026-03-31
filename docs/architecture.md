@@ -2,21 +2,22 @@
 
 ## Overview
 
-`superteam` is a Python harness for running non-interactive builder/evaluator loops for software-engineering code review and QA audits. A pipeline defines two agents, the runtime instantiates their providers, the core loop coordinates iterations, and the session layer persists state and artifacts on disk.
+`superteam` is an orchestration kernel for non-interactive builder/auditor loops. A pipeline selects two full agent modules, the runtime instantiates them, the core loop coordinates iterations, and the session layer persists state, artifacts, and invocation records on disk.
 
 ## Package Layout
 
 - `src/superteam/core/`
-  - `contracts.py`: dataclasses for `LoopState`, `Verdict`, `IterationRecord`, `SessionMeta`, and `Event`
-  - `loop.py`: prompt assembly, verdict parsing, artifact spilling, retry logic, and loop termination
+  - `contracts.py`: dataclasses for `LoopState`, `Verdict`, `IterationRecord`, `InvocationRecord`, `SessionMeta`, and `Event`
+  - `loop.py`: prompt assembly, verdict parsing, artifact spilling, invocation capture, retry logic, and loop termination
+  - `modules.py`: protocol for full builder/auditor modules
   - `observe.py`: event emission to stdout and/or persisted JSONL logs
-  - `session.py`: session directories, atomic writes, checkpoints, and state recovery
+  - `session.py`: session directories, atomic writes, checkpoints, and invocation persistence
 - `src/superteam/runtime/`
   - `config.py`: global config loading plus deep-merge helpers
-  - `pipeline.py`: YAML pipeline loading, provider registry, config resolution, and run preparation
-- `src/superteam/providers/`
-  - Provider packages for `claude_api`, `claude_code`, and `openrouter`
-  - `testing.py` provides deterministic static builder/evaluator fakes for tests
+  - `pipeline.py`: YAML pipeline loading, module registry, config resolution, and run preparation
+- `src/superteam/modules/`
+  - CLI-backed module packages for `codex` and `claude_code`
+  - `testing.py` provides deterministic static builder/auditor fakes for tests
 - `src/superteam/cli/`
   - Typer commands for `run`, `watch`, `status`, `result`, `sessions list`, and `audit`
 - `src/superteam/pipelines/`
@@ -27,13 +28,13 @@
 ```mermaid
 flowchart TD
     A["CLI command"] --> B["runtime.pipeline.prepare_run()"]
-    B --> C["Instantiate builder and evaluator providers"]
+    B --> C["Instantiate builder and auditor modules"]
     C --> D["Create or open Session"]
     D --> E["core.loop.run_loop()"]
-    E --> F["Builder completes prompt"]
+    E --> F["Builder module runs"]
     F --> G["Optional artifact spill"]
-    G --> H["Evaluator scores output"]
-    H --> I["Session checkpoint + event log"]
+    G --> H["Auditor module scores output"]
+    H --> I["Session checkpoint + event log + invocation records"]
     I --> J{"Stop condition met?"}
     J -- No --> E
     J -- Yes --> K["Finalize session status"]
@@ -42,14 +43,14 @@ flowchart TD
 ### `run` command path
 
 1. `src/superteam/cli/run.py` resolves a pipeline reference and optional goal/plan overrides.
-2. `prepare_run()` loads the pipeline YAML, merges global provider config, and instantiates concrete provider classes.
+2. `prepare_run()` loads the pipeline YAML, merges global module config, and instantiates concrete module classes.
 3. A `Session` is created or reopened for background execution.
 4. `run_loop()` drives iterations until a passing audit or max-iteration policy is reached.
 5. The final state is persisted, and the CLI prints the session id plus resolved output for foreground runs.
 
 ### `audit` command path
 
-`src/superteam/cli/audit.py` skips the builder loop entirely. It reads piped content from stdin, instantiates a single evaluator provider, and emits the same canonical Markdown audit report parsed by the main loop.
+`src/superteam/cli/audit.py` skips the builder loop entirely. It reads piped content from stdin, instantiates a single auditor module, and emits the same canonical Markdown audit report parsed by the main loop.
 
 ## Core Data Model
 
@@ -67,7 +68,7 @@ The mutable state for a run. It carries:
 
 ### `Verdict`
 
-The evaluator response contract is a canonical Markdown audit report with YAML frontmatter. The parsed verdict includes:
+The auditor response contract is a canonical Markdown audit report with YAML frontmatter. The parsed verdict includes:
 
 - `status`: `pass`, `fail`, or `retry`
 - `audit_verdict`: `PASS`, `PASS WITH CONDITIONS`, or `FAIL`
@@ -76,9 +77,16 @@ The evaluator response contract is a canonical Markdown audit report with YAML f
 - `metadata`: freeform machine-readable audit metadata
 - `feedback`: the Markdown audit body with the seven required sections
 
-### `IterationRecord`
+### `InvocationRecord`
 
-The append-only summary of each loop step, including output preview, artifact reference, verdict, and token accounting when available.
+Each module call persists:
+
+- module id and role
+- iteration number and retry attempt
+- cwd
+- started/ended timestamps and duration
+- exact system prompt, task prompt, final output, and any spill refs
+- error text when a call fails
 
 ## Persistence Model
 
@@ -95,9 +103,12 @@ Each session directory follows this shape:
   iterations/
     001.json
     001.verdict.json
+  invocations/
+    0001.json
+    0002.json
   artifacts/
     001.artifact
-  workspace/
+    invocation-0001-output.txt
 ```
 
 ### Persistence rules
@@ -105,8 +116,8 @@ Each session directory follows this shape:
 - Metadata and state writes are atomic.
 - Event logs are append-only JSONL.
 - Large builder outputs spill to `artifacts/` once they cross `OUTPUT_INLINE_LIMIT`.
+- Large invocation payloads spill to `artifacts/` and remain linked from `invocations/`.
 - `state.json` always represents the latest known loop state.
-- Verdict checkpoints remain JSON files, but their contents store the parsed Markdown-audit verdict fields.
 
 ## Configuration And Pipelines
 
@@ -114,51 +125,52 @@ Pipelines are YAML specs that define:
 
 - pipeline metadata
 - loop configuration such as max iterations and retry policy
-- builder provider, system prompt, and provider config
-- evaluator provider, system prompt, and provider config
+- builder module, system prompt, and module config
+- auditor module, system prompt, and module config
 - default input values such as `goal` and `plan`
 
 Config precedence is:
 
 `CLI args > pipeline YAML > global config (~/.superteam/config.toml)`
 
-Global config is merged per provider and for loop settings before providers are instantiated.
+Global config is merged per module and for loop settings before modules are instantiated.
 
-## Provider Boundary
+## Module Boundary
 
-Providers are expected to expose:
+Modules are expected to expose:
 
-- `complete(system, prompt, state=None) -> str`
+- `run(role, system, prompt, state=None, cwd=None) -> str`
 - `health() -> bool`
+- `capabilities() -> set[str]`
 
-The loop wraps providers with `_LoopProvider` to add:
+The loop wraps modules to add:
 
 - observer events
 - transient retry handling
-- token usage capture when the provider exposes it
+- persisted invocation records
 
 ## Testing Strategy
 
-The test suite is designed to run without live API access.
+The test suite is designed to run without live model APIs.
 
-- Use `src/superteam/providers/testing.py` for deterministic loop tests.
+- Use `src/superteam/modules/testing.py` for deterministic loop tests.
 - Use `SUPERTEAM_HOME` isolation in tests that touch session persistence.
-- Prefer focused tests around loop control flow, session layout, config merging, and CLI argument behavior.
+- Prefer focused tests around loop control flow, session layout, config merging, CLI behavior, and module command construction.
 
 ## Extension Checklist
 
-### Adding a provider
+### Adding a module
 
-- Add the provider package under `src/superteam/providers/`
-- Export it from `src/superteam/providers/__init__.py`
+- Add the module package under `src/superteam/modules/`
+- Export it from `src/superteam/modules/__init__.py`
 - Register it in `src/superteam/runtime/pipeline.py`
-- Document required dependencies and env vars in `README.md`
+- Document required external CLI/runtime dependencies in `README.md`
 - Add focused tests and, if appropriate, a smoke test
 
 ### Changing session/state behavior
 
 - Update `core/contracts.py` and/or `core/session.py`
-- Review compatibility with existing on-disk sessions
+- Review the on-disk session layout and CLI outputs
 - Update architecture docs and tests that assert persisted layout
 
 ### Adding a built-in pipeline

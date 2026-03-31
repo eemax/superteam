@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from typer.testing import CliRunner
@@ -45,12 +46,12 @@ loop:
   max_iterations: 3
 agents:
   builder:
-    provider: fake_builder
+    module: fake_builder
     outputs:
       - "first draft"
       - "final draft"
-  evaluator:
-    provider: fake_evaluator
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("fail", "FAIL", 0.1, "fix it", ["Fix it"])
@@ -72,6 +73,8 @@ input:
     payload = json.loads(status_result.output)
     assert payload["status"] == "done"
     assert payload["iteration"] == 2
+    assert payload["builder_module"] == "fake_builder"
+    assert payload["auditor_module"] == "fake_auditor"
 
     watch_result = runner.invoke(app, ["watch", session_id])
     assert watch_result.exit_code == 0
@@ -90,7 +93,8 @@ input:
     assert parsed["state"]["output"] == "final draft"
 
 
-def test_cli_detach_writes_pid_and_completes(tmp_path):
+def test_cli_detach_writes_pid_completes_and_preserves_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     pipeline_path = tmp_path / "detach.yaml"
     pipeline_path.write_text(
         (
@@ -100,11 +104,11 @@ loop:
   max_iterations: 1
 agents:
   builder:
-    provider: fake_builder
+    module: fake_builder
     outputs:
       - "background output"
-  evaluator:
-    provider: fake_evaluator
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("pass", "PASS", 1.0, "ok")
@@ -127,6 +131,7 @@ agents:
     assert session.load_meta().status == "done"
     result = runner.invoke(app, ["result", session_id])
     assert result.output.strip() == "background output"
+    assert session.list_invocations()[0].cwd == str(tmp_path)
 
 
 def test_cli_sessions_list_returns_created_sessions(tmp_path):
@@ -139,11 +144,11 @@ loop:
   max_iterations: 1
 agents:
   builder:
-    provider: fake_builder
+    module: fake_builder
     outputs:
       - "output"
-  evaluator:
-    provider: fake_evaluator
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("pass", "PASS", 1.0, "ok")
@@ -182,11 +187,11 @@ loop:
   max_iterations: 1
 agents:
   builder:
-    provider: fake_builder
+    module: fake_builder
     outputs:
       - "output"
-  evaluator:
-    provider: fake_evaluator
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("pass", "PASS", 1.0, "ok")
@@ -202,6 +207,7 @@ agents:
     assert text_result.exit_code == 0
     assert f"session_id={session_id}" in text_result.output
     assert "status=done" in text_result.output
+    assert "builder_module=fake_builder" in text_result.output
 
 
 def test_cli_result_returns_full_spilled_artifact(tmp_path):
@@ -215,11 +221,11 @@ loop:
   max_iterations: 1
 agents:
   builder:
-    provider: fake_builder
+    module: fake_builder
     outputs:
       - "{long_output}"
-  evaluator:
-    provider: fake_evaluator
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("pass", "PASS", 1.0, "ok")
@@ -241,7 +247,7 @@ def test_cli_run_respects_global_config(tmp_path, monkeypatch):
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        '[providers.fake_builder]\noutputs = ["global-output"]\n',
+        '[modules.fake_builder]\noutputs = ["global-output"]\n',
         encoding="utf-8",
     )
 
@@ -254,9 +260,9 @@ loop:
   max_iterations: 1
 agents:
   builder:
-    provider: fake_builder
-  evaluator:
-    provider: fake_evaluator
+    module: fake_builder
+  auditor:
+    module: fake_auditor
     responses:
 """
             + _yaml_response("pass", "PASS", 1.0, "ok")
@@ -276,7 +282,7 @@ agents:
 def test_cli_audit_outputs_markdown():
     audit_result = runner.invoke(
         app,
-        ["audit", "--goal", "Confirm this is ship-ready", "--provider", "fake_evaluator"],
+        ["audit", "--goal", "Confirm this is ship-ready", "--module", "fake_auditor"],
         input="builder output",
     )
 
@@ -286,19 +292,40 @@ def test_cli_audit_outputs_markdown():
     assert "# Agent Audit" in audit_result.output
 
 
+def test_cli_audit_requires_module():
+    audit_result = runner.invoke(app, ["audit", "--goal", "Confirm this is ship-ready"], input="builder output")
+
+    assert audit_result.exit_code != 0
+    assert "--module" in audit_result.output
+
+
 def test_cli_audit_fails_on_invalid_output(monkeypatch):
-    class BrokenProvider:
-        def complete(self, system: str, prompt: str) -> str:
+    class BrokenModule:
+        def run(self, role: str, system: str, prompt: str, state=None, cwd=None) -> str:
             return "not markdown"
 
-    monkeypatch.setattr(runtime_pipeline, "instantiate_provider", lambda agent: BrokenProvider())
+        def capabilities(self):
+            return {"auditor"}
+
+    monkeypatch.setattr(runtime_pipeline, "instantiate_module", lambda agent: BrokenModule())
 
     audit_result = runner.invoke(
         app,
-        ["audit", "--goal", "Confirm this is ship-ready", "--provider", "fake_evaluator"],
+        ["audit", "--goal", "Confirm this is ship-ready", "--module", "fake_auditor"],
         input="builder output",
     )
 
     assert audit_result.exit_code == 1
-    assert "Could not parse evaluator audit report:" in audit_result.output
+    assert "Could not parse auditor audit report:" in audit_result.output
     assert "Verdict must start with YAML frontmatter" in audit_result.output
+
+
+def test_cli_audit_rejects_unknown_module():
+    audit_result = runner.invoke(
+        app,
+        ["audit", "--goal", "Confirm this is ship-ready", "--module", "openrouter"],
+        input="builder output",
+    )
+
+    assert audit_result.exit_code == 1
+    assert "Unknown module: openrouter" in audit_result.output

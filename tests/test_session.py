@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from superteam.core.contracts import LoopState, Verdict
+from superteam.core.contracts import InvocationRecord, LoopState, Verdict
 from superteam.core.session import Session
 
 
 def test_session_lifecycle_writes_expected_files():
-    session = Session.create(builder_provider="builder", eval_provider="evaluator", pipeline="pipeline")
+    session = Session.create(builder_module="builder", auditor_module="auditor", pipeline="pipeline")
 
     meta = session.load_meta()
     assert meta.status == "running"
@@ -21,17 +21,34 @@ def test_session_lifecycle_writes_expected_files():
         metadata={},
     )
     session.checkpoint(state, verdict)
+    session.record_invocation(
+        InvocationRecord(
+            index=0,
+            iteration=1,
+            module="codex",
+            role="builder",
+            attempt=1,
+            started_at=1.0,
+            ended_at=2.0,
+            duration_seconds=1.0,
+            cwd="/tmp/project",
+            system="sys",
+            prompt="prompt",
+            output="output",
+        )
+    )
     session.finish("done", score=1.0)
 
     assert session.state_path.exists()
     assert (session.iterations_dir / "001.json").exists()
     assert (session.iterations_dir / "001.verdict.json").exists()
+    assert (session.invocations_dir / "0001.json").exists()
     assert session.load_meta().iterations == 1
     assert session.load_meta().status == "done"
 
 
 def test_open_and_list_do_not_mutate_session_files():
-    session = Session.create(builder_provider="builder", eval_provider="evaluator", pipeline="pipeline")
+    session = Session.create(builder_module="builder", auditor_module="auditor", pipeline="pipeline")
     before = session.meta_path.read_text(encoding="utf-8")
 
     opened = Session.open(session.id)

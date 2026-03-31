@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-from .contracts import LoopState, SessionMeta, Verdict, new_session_id
+from .contracts import InvocationRecord, LoopState, SessionMeta, Verdict, new_session_id
 
 
 SUPERTEAM_HOME_ENV = "SUPERTEAM_HOME"
@@ -37,8 +37,8 @@ class Session:
     def __init__(
         self,
         session_id: str | None = None,
-        builder_provider: str = "unknown",
-        eval_provider: str = "unknown",
+        builder_module: str = "unknown",
+        auditor_module: str = "unknown",
         pipeline: str | None = None,
         *,
         create: bool = True,
@@ -50,6 +50,7 @@ class Session:
         self.state_path = self.dir / "state.json"
         self.iterations_dir = self.dir / "iterations"
         self.artifacts_dir = self.dir / "artifacts"
+        self.invocations_dir = self.dir / "invocations"
         self.workspace_dir = self.dir / "workspace"
         self.run_pid_path = self.dir / "run.pid"
 
@@ -59,8 +60,8 @@ class Session:
                 meta = SessionMeta(
                     session_id=self.id,
                     pipeline=pipeline,
-                    builder_provider=builder_provider,
-                    eval_provider=eval_provider,
+                    builder_module=builder_module,
+                    auditor_module=auditor_module,
                     status="running",
                 )
                 self._write_meta(meta)
@@ -72,14 +73,14 @@ class Session:
     def create(
         cls,
         session_id: str | None = None,
-        builder_provider: str = "unknown",
-        eval_provider: str = "unknown",
+        builder_module: str = "unknown",
+        auditor_module: str = "unknown",
         pipeline: str | None = None,
     ) -> "Session":
         return cls(
             session_id=session_id,
-            builder_provider=builder_provider,
-            eval_provider=eval_provider,
+            builder_module=builder_module,
+            auditor_module=auditor_module,
             pipeline=pipeline,
             create=True,
         )
@@ -108,6 +109,7 @@ class Session:
     def _ensure_layout(self) -> None:
         self.iterations_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.invocations_dir.mkdir(parents=True, exist_ok=True)
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def _write_meta(self, meta: SessionMeta) -> None:
@@ -133,6 +135,35 @@ class Session:
         )
         _write_text_atomic(self.state_path, state.to_json())
         self.update_meta(iterations=iteration)
+
+    def record_invocation(self, record: InvocationRecord) -> InvocationRecord:
+        index = self.next_invocation_index()
+        system, system_ref = self._inline_or_spill_invocation_text(index, "system", record.system)
+        prompt, prompt_ref = self._inline_or_spill_invocation_text(index, "prompt", record.prompt)
+        output, output_ref = self._inline_or_spill_invocation_text(index, "output", record.output)
+        stored = replace(
+            record,
+            index=index,
+            system=system,
+            system_ref=system_ref,
+            prompt=prompt,
+            prompt_ref=prompt_ref,
+            output=output,
+            output_ref=output_ref,
+        )
+        _write_text_atomic(
+            self.invocations_dir / f"{stored.index:04d}.json",
+            json.dumps(asdict(stored), indent=2),
+        )
+        return stored
+
+    def list_invocations(self) -> list[InvocationRecord]:
+        if not self.invocations_dir.exists():
+            return []
+        records: list[InvocationRecord] = []
+        for path in sorted(self.invocations_dir.glob("*.json")):
+            records.append(InvocationRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+        return records
 
     def load_state(self) -> LoopState:
         return LoopState.from_json(self.state_path.read_text(encoding="utf-8"))
@@ -165,3 +196,24 @@ class Session:
             if path.exists():
                 return path.read_text(encoding="utf-8")
         return state.output
+
+    def next_invocation_index(self) -> int:
+        if not self.invocations_dir.exists():
+            return 1
+        return len(list(self.invocations_dir.glob("*.json"))) + 1
+
+    def _inline_or_spill_invocation_text(
+        self,
+        index: int,
+        field_name: str,
+        text: str,
+        inline_limit: int = 8_000,
+    ) -> tuple[str, str | None]:
+        if len(text) <= inline_limit:
+            return text, None
+        artifact_path = self.artifacts_dir / f"invocation-{index:04d}-{field_name}.txt"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(text, encoding="utf-8")
+        preview = text[:300] + ("…" if len(text) > 300 else "")
+        inline = f"[artifact spilled to {artifact_path.name}]\n\n{preview}"
+        return inline, str(artifact_path)

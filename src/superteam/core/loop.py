@@ -14,10 +14,12 @@ from .contracts import (
     OUTPUT_INLINE_LIMIT,
     OUTPUT_PREVIEW_LIMIT,
     STATUS_TO_AUDIT_VERDICT,
+    InvocationRecord,
     IterationRecord,
     LoopState,
     Verdict,
 )
+from .modules import ModuleRole
 from .observe import Observer
 from .session import Session
 
@@ -68,32 +70,73 @@ class SessionArtifactStore(InlineArtifactStore):
         return inline, str(artifact_path), preview
 
 
-class _LoopProvider:
-    def __init__(self, label: str, provider, observer: Observer, config: LoopConfig):
-        self.label = label
-        self.provider = provider
+class _LoopModule:
+    def __init__(
+        self,
+        role: ModuleRole,
+        module_name: str,
+        module,
+        observer: Observer,
+        config: LoopConfig,
+        session: Session | None = None,
+        cwd: str | None = None,
+    ):
+        self.role = role
+        self.module_name = module_name
+        self.module = module
         self.observer = observer
         self.config = config
-        self.last_tokens: dict[str, int] = {}
+        self.session = session
+        self.cwd = cwd
 
-    def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
-        iteration = (state.iteration + 1) if state is not None else 1
-        self.observer.emit("step_start", {"step": self.label, "iteration": iteration})
+    def run(
+        self,
+        role: ModuleRole,
+        system: str,
+        prompt: str,
+        state: LoopState | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        if role != self.role:
+            raise ValueError(f"Loop module for {self.role!r} cannot run role {role!r}")
+        iteration = _resolve_iteration(self.role, state)
+        self.observer.emit("step_start", {"step": self.role, "module": self.module_name, "iteration": iteration})
 
         transient_errors = _transient_exceptions()
         for attempt in range(self.config.transient_retries + 1):
+            started_at = time.time()
             try:
-                result = self.provider.complete(system, prompt, state)
-                self.last_tokens = _extract_tokens(self.provider)
+                result = self.module.run(self.role, system, prompt, state, cwd=self.cwd)
+                self._record_invocation(
+                    iteration=iteration,
+                    attempt=attempt + 1,
+                    started_at=started_at,
+                    ended_at=time.time(),
+                    system=system,
+                    prompt=prompt,
+                    output=result,
+                )
                 return result
             except transient_errors as exc:
+                ended_at = time.time()
+                self._record_invocation(
+                    iteration=iteration,
+                    attempt=attempt + 1,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    system=system,
+                    prompt=prompt,
+                    output="",
+                    error=str(exc),
+                )
                 if attempt >= self.config.transient_retries:
                     raise
                 wait_seconds = 2**attempt
                 self.observer.emit(
                     "error",
                     {
-                        "step": self.label,
+                        "step": self.role,
+                        "module": self.module_name,
                         "type": "transient",
                         "attempt": attempt + 1,
                         "wait": wait_seconds,
@@ -101,14 +144,58 @@ class _LoopProvider:
                     },
                 )
                 time.sleep(wait_seconds)
+            except Exception as exc:
+                self._record_invocation(
+                    iteration=iteration,
+                    attempt=attempt + 1,
+                    started_at=started_at,
+                    ended_at=time.time(),
+                    system=system,
+                    prompt=prompt,
+                    output="",
+                    error=str(exc),
+                )
+                raise
 
         raise RuntimeError("Retry loop exited unexpectedly")
 
     def health(self) -> bool:
-        return self.provider.health()
+        return self.module.health()
 
     def __getattr__(self, name: str):
-        return getattr(self.provider, name)
+        return getattr(self.module, name)
+
+    def _record_invocation(
+        self,
+        *,
+        iteration: int,
+        attempt: int,
+        started_at: float,
+        ended_at: float,
+        system: str,
+        prompt: str,
+        output: str,
+        error: str | None = None,
+    ) -> None:
+        if self.session is None:
+            return
+        self.session.record_invocation(
+            InvocationRecord(
+                index=0,
+                iteration=iteration,
+                module=self.module_name,
+                role=self.role,
+                attempt=attempt,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_seconds=ended_at - started_at,
+                cwd=self.cwd,
+                system=system,
+                prompt=prompt,
+                output=output,
+                error=error,
+            )
+        )
 
 
 def _load_output_text(state: LoopState, artifact_store: ArtifactStore | None = None) -> str:
@@ -140,7 +227,7 @@ def build_builder_prompt(state: LoopState, artifact_store: ArtifactStore | None 
     return "\n".join(parts)
 
 
-def build_evaluator_prompt(state: LoopState, artifact_store: ArtifactStore | None = None) -> str:
+def build_auditor_prompt(state: LoopState, artifact_store: ArtifactStore | None = None) -> str:
     output_text = _load_output_text(state, artifact_store)
 
     return f"""## Goal
@@ -189,8 +276,9 @@ def audit_report_format_instructions() -> str:
 def parse_verdict(
     raw: str,
     config: LoopConfig = LoopConfig(),
-    evaluator=None,
+    auditor=None,
     system: str = "",
+    state: LoopState | None = None,
 ) -> Verdict:
     def _try_parse(text: str) -> Verdict:
         frontmatter, body = _split_frontmatter(text)
@@ -211,7 +299,7 @@ def parse_verdict(
     except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
         last_error = exc
 
-    if config.parse_repair_prompt and evaluator is not None:
+    if config.parse_repair_prompt and auditor is not None:
         raw_preview = raw[:2000]
         repair_prompt = (
             "Your previous response could not be parsed as the required Markdown audit report. "
@@ -220,7 +308,7 @@ def parse_verdict(
             "Please rewrite it into the required canonical Markdown audit format.\n\n"
             f"{audit_report_format_instructions()}"
         )
-        repaired = evaluator.complete(system, repair_prompt)
+        repaired = auditor.run("auditor", system, repair_prompt, state)
         try:
             return _try_parse(repaired)
         except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
@@ -235,16 +323,16 @@ def parse_verdict(
 
 def step_once(
     builder,
-    evaluator,
+    auditor,
     state: LoopState,
     config: LoopConfig = LoopConfig(),
     builder_system: str = "You are an expert builder. Execute the plan precisely.",
-    evaluator_system: str = "You are a rigorous QA evaluator. Return only the canonical Markdown audit report.",
+    auditor_system: str = "You are a rigorous QA auditor. Return only the canonical Markdown audit report.",
     artifact_store: ArtifactStore | None = None,
 ) -> tuple[LoopState, Verdict]:
     artifact_store = artifact_store or InlineArtifactStore()
 
-    output_raw = builder.complete(builder_system, build_builder_prompt(state, artifact_store), state)
+    output_raw = builder.run("builder", builder_system, build_builder_prompt(state, artifact_store), state)
     output, output_ref, output_preview = _maybe_spill(output_raw, state, artifact_store)
     next_state = replace(
         state,
@@ -254,13 +342,13 @@ def step_once(
         iteration=state.iteration + 1,
     )
 
-    raw_verdict = evaluator.complete(
-        evaluator_system,
-        build_evaluator_prompt(next_state, artifact_store=artifact_store),
+    raw_verdict = auditor.run(
+        "auditor",
+        auditor_system,
+        build_auditor_prompt(next_state, artifact_store=artifact_store),
         next_state,
     )
-    verdict = parse_verdict(raw_verdict, config=config, evaluator=evaluator, system=evaluator_system)
-    tokens = _combine_tokens(builder, evaluator)
+    verdict = parse_verdict(raw_verdict, config=config, auditor=auditor, system=auditor_system, state=next_state)
     record = IterationRecord(
         iteration=next_state.iteration,
         ts_start=0.0,
@@ -268,7 +356,6 @@ def step_once(
         output_preview=output_preview or output[:OUTPUT_PREVIEW_LIMIT],
         output_ref=output_ref,
         verdict=verdict,
-        tokens=tokens,
     )
     next_state = replace(
         next_state,
@@ -281,18 +368,37 @@ def step_once(
 
 def run_loop(
     builder,
-    evaluator,
+    auditor,
     state: LoopState,
     config: LoopConfig = LoopConfig(),
     observer: Observer | None = None,
     session: Session | None = None,
     builder_system: str = "You are an expert builder. Execute the plan precisely.",
-    evaluator_system: str = "You are a rigorous QA evaluator. Return only the canonical Markdown audit report.",
+    auditor_system: str = "You are a rigorous QA auditor. Return only the canonical Markdown audit report.",
+    builder_module_name: str = "builder",
+    auditor_module_name: str = "auditor",
+    cwd: str | None = None,
 ) -> LoopState:
     obs = observer or Observer(session=session)
     artifact_store: ArtifactStore = SessionArtifactStore(session) if session else InlineArtifactStore()
-    wrapped_builder = _LoopProvider("builder", builder, obs, config)
-    wrapped_evaluator = _LoopProvider("evaluator", evaluator, obs, config)
+    wrapped_builder = _LoopModule(
+        "builder",
+        builder_module_name,
+        builder,
+        obs,
+        config,
+        session=session,
+        cwd=cwd,
+    )
+    wrapped_auditor = _LoopModule(
+        "auditor",
+        auditor_module_name,
+        auditor,
+        obs,
+        config,
+        session=session,
+        cwd=cwd,
+    )
     passes = 0
     last_verdict: Verdict | None = None
 
@@ -304,11 +410,11 @@ def run_loop(
         try:
             state, verdict = step_once(
                 wrapped_builder,
-                wrapped_evaluator,
+                wrapped_auditor,
                 state,
                 config,
                 builder_system,
-                evaluator_system,
+                auditor_system,
                 artifact_store=artifact_store,
             )
         except Exception as exc:
@@ -379,46 +485,8 @@ def _maybe_spill(
         return output, None, ""
     return artifact_store.spill(output, state.iteration + 1)
 
-
-def _combine_tokens(builder, evaluator) -> dict[str, dict[str, int]]:
-    combined: dict[str, dict[str, int]] = {}
-    for label, provider in (("builder", builder), ("evaluator", evaluator)):
-        usage = _extract_tokens(provider)
-        if usage:
-            combined[label] = usage
-    return combined
-
-
-def _extract_tokens(provider) -> dict[str, int]:
-    usage = getattr(provider, "last_tokens", None)
-    if callable(usage):
-        usage = usage()
-    if isinstance(usage, dict):
-        return {
-            key: int(value)
-            for key, value in usage.items()
-            if isinstance(value, int) and not isinstance(value, bool)
-        }
-    return {}
-
-
 def _transient_exceptions() -> tuple[type[BaseException], ...]:
-    exceptions: list[type[BaseException]] = [TimeoutError, ConnectionError]
-    try:
-        import httpx
-
-        exceptions.extend([httpx.TimeoutException, httpx.NetworkError])
-    except ImportError:
-        pass
-
-    try:
-        from anthropic import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
-
-        exceptions.extend([APIConnectionError, APITimeoutError, InternalServerError, RateLimitError])
-    except ImportError:
-        pass
-
-    return tuple(dict.fromkeys(exceptions))
+    return TimeoutError, ConnectionError
 
 
 def _strip_code_fences(text: str) -> str:
@@ -499,3 +567,11 @@ def _summarize_next_steps(next_steps: list[str], limit: int = 2) -> str:
     if not next_steps:
         return ""
     return "; ".join(next_steps[:limit])
+
+
+def _resolve_iteration(role: ModuleRole, state: LoopState | None) -> int:
+    if state is None:
+        return 1
+    if role == "builder":
+        return state.iteration + 1
+    return max(state.iteration, 1)

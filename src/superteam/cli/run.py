@@ -16,13 +16,15 @@ from superteam.runtime.pipeline import load_pipeline, prepare_run
 
 def run_command(
     pipeline: str = typer.Argument(..., help="Pipeline path or built-in pipeline name."),
-    goal: str | None = typer.Option(None, "--goal", help="Goal for the builder/evaluator loop."),
+    goal: str | None = typer.Option(None, "--goal", help="Goal for the builder/auditor loop."),
     plan: str | None = typer.Option(None, "--plan", help="Execution plan. Defaults to goal."),
     detach: bool = typer.Option(False, "--detach", help="Run in the background and return the session id."),
     session_id: str | None = typer.Option(None, "--_session-id", hidden=True),
     background: bool = typer.Option(False, "--_background", hidden=True),
+    cwd: str | None = typer.Option(None, "--_cwd", hidden=True),
 ) -> None:
     pipeline_ref = _resolve_pipeline_ref(pipeline)
+    resolved_cwd = cwd or os.getcwd()
 
     if detach and not background:
         spec = load_pipeline(pipeline_ref)
@@ -31,17 +33,17 @@ def run_command(
             raise typer.BadParameter("A goal is required either via --goal or pipeline input.goal")
         resolved_plan = plan or spec.input_defaults.get("plan") or resolved_goal
         session = Session.create(
-            builder_provider=spec.builder.provider,
-            eval_provider=spec.evaluator.provider,
+            builder_module=spec.builder.module,
+            auditor_module=spec.auditor.module,
             pipeline=spec.name,
         )
-        process = _spawn_detached_run(session.id, pipeline_ref, resolved_goal, resolved_plan)
+        process = _spawn_detached_run(session.id, pipeline_ref, resolved_goal, resolved_plan, resolved_cwd)
         session.write_run_pid(process.pid)
         typer.echo(session.id)
         return
 
     try:
-        prepared = prepare_run(pipeline_ref, goal=goal, plan=plan)
+        prepared = prepare_run(pipeline_ref, goal=goal, plan=plan, cwd=resolved_cwd)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -50,8 +52,8 @@ def run_command(
         if background and session_id is not None
         else Session.create(
             session_id=session_id,
-            builder_provider=prepared.builder_provider_name,
-            eval_provider=prepared.evaluator_provider_name,
+            builder_module=prepared.builder_module_name,
+            auditor_module=prepared.auditor_module_name,
             pipeline=prepared.pipeline_name,
         )
     )
@@ -64,13 +66,16 @@ def run_command(
     try:
         final = run_loop(
             prepared.builder,
-            prepared.evaluator,
+            prepared.auditor,
             initial,
             config=prepared.loop_config,
             observer=observer,
             session=session,
             builder_system=prepared.builder_system,
-            evaluator_system=prepared.evaluator_system,
+            auditor_system=prepared.auditor_system,
+            builder_module_name=prepared.builder_module_name,
+            auditor_module_name=prepared.auditor_module_name,
+            cwd=prepared.cwd,
         )
     except Exception as exc:
         observer.emit("error", {"step": "run", "message": str(exc)})
@@ -93,7 +98,7 @@ def _resolve_pipeline_ref(pipeline: str) -> str:
     return pipeline
 
 
-def _spawn_detached_run(session_id: str, pipeline: str, goal: str, plan: str) -> subprocess.Popen:
+def _spawn_detached_run(session_id: str, pipeline: str, goal: str, plan: str, cwd: str) -> subprocess.Popen:
     package_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     existing_path = env.get("PYTHONPATH")
@@ -112,10 +117,12 @@ def _spawn_detached_run(session_id: str, pipeline: str, goal: str, plan: str) ->
         "--_background",
         "--_session-id",
         session_id,
+        "--_cwd",
+        cwd,
     ]
     return subprocess.Popen(
         cmd,
-        cwd=os.getcwd(),
+        cwd=cwd,
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

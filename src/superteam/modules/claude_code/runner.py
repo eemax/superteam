@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import logging
-from pathlib import Path
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -10,18 +9,22 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 from superteam.core.contracts import LoopState
-from superteam.core.session import sessions_dir
 
 from .config import ClaudeCodeConfig
 
 
-class ClaudeCodeProvider:
+class ClaudeCodeModule:
     def __init__(self, config: ClaudeCodeConfig = ClaudeCodeConfig()):
         self.config = config
-        self.last_tokens: dict[str, int] = {}
 
-    def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
-        cwd = self._resolve_working_dir(state)
+    def run(
+        self,
+        role: str,
+        system: str,
+        prompt: str,
+        state: LoopState | None = None,
+        cwd: str | None = None,
+    ) -> str:
         cmd = [
             "claude",
             "-p",
@@ -32,7 +35,6 @@ class ClaudeCodeProvider:
             "--system-prompt",
             system,
         ]
-        # Current Claude Code builds do not expose a max-turns flag in print mode.
         if self.config.max_turns is not None:
             logger.warning(
                 "max_turns=%d is set but Claude Code print mode does not support --max-turns; ignoring",
@@ -51,7 +53,7 @@ class ClaudeCodeProvider:
                 cmd,
                 input=prompt.encode("utf-8"),
                 capture_output=True,
-                cwd=cwd,
+                cwd=self._resolve_working_dir(cwd),
                 timeout=self.config.timeout,
                 env=env,
                 check=False,
@@ -70,23 +72,18 @@ class ClaudeCodeProvider:
     def health(self) -> bool:
         return shutil.which("claude") is not None
 
-    def _resolve_working_dir(self, state: LoopState | None) -> str | None:
-        if self.config.working_dir:
-            return self.config.working_dir
-        if state is None:
-            return None
-        workspace = sessions_dir() / state.session_id / "workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        return str(workspace)
+    def capabilities(self) -> set[str]:
+        return {"builder", "auditor"}
+
+    def _resolve_working_dir(self, cwd: str | None) -> str | None:
+        return self.config.working_dir or cwd
 
     def _parse_output(self, raw: str) -> str:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            self.last_tokens = {}
             return raw
 
-        self.last_tokens = self._parse_usage(data)
         if isinstance(data, dict):
             if isinstance(data.get("result"), str):
                 return data["result"]
@@ -100,22 +97,3 @@ class ClaudeCodeProvider:
                 if chunks:
                     return "".join(chunks)
         return raw
-
-    def _parse_usage(self, data: dict) -> dict[str, int]:
-        usage = data.get("usage")
-        if not isinstance(usage, dict):
-            return {}
-
-        parsed: dict[str, int] = {}
-        for target, keys in {
-            "input": ("input_tokens", "inputTokens"),
-            "output": ("output_tokens", "outputTokens"),
-        }.items():
-            for key in keys:
-                value = usage.get(key)
-                if isinstance(value, int):
-                    parsed[target] = value
-                    break
-        if "input" in parsed or "output" in parsed:
-            parsed["total"] = parsed.get("input", 0) + parsed.get("output", 0)
-        return parsed

@@ -6,12 +6,12 @@ from superteam.core.contracts import LoopState, Verdict
 
 
 @dataclass
-class StaticBuilderConfig:
+class StaticBuilderModuleConfig:
     outputs: list[str] = field(default_factory=lambda: ["builder output"])
 
 
 @dataclass
-class StaticEvaluatorConfig:
+class StaticAuditorModuleConfig:
     responses: list[dict] = field(
         default_factory=lambda: [
             {
@@ -20,44 +20,44 @@ class StaticEvaluatorConfig:
                 "score": 1.0,
                 "next_steps": [],
                 "metadata": {},
-                "feedback": "# Agent Audit\n\n## 1. Context\nDefault test audit.\n\n## 2. Verdict\n**PASS**\n\n**Rationale:** Default pass.\n\n**Confidence:** High\n\n## 3. Findings Summary\n- **P1 - Critical:** 0\n- **P2 - Major:** 0\n- **P3 - Minor:** 0\n\n## 4. Findings\nNo open findings.\n\n## 5. Recommendations\n### Before Ship\n- None.\n\n### Before Next Milestone\n- None.\n\n### Longer-Term Improvements\n- None.\n\n## 6. Audit Details\n- **Files reviewed:** []\n- **Tests run:** []\n- **Results:** 0 passed, 0 failed, 0 skipped\n- **Tools used:** [\"static review\"]\n- **Method:** static review\n- **Environment:** test harness\n- **Reference:** test fixture\n- **Audited by:** fake_evaluator\n- **Timestamp:** 2026-03-31T00:00:00+07:00\n\n## 7. Scope Exclusions\n- None.",
+                "feedback": "# Agent Audit\n\n## 1. Context\nDefault test audit.\n\n## 2. Verdict\n**PASS**\n\n**Rationale:** Default pass.\n\n**Confidence:** High\n\n## 3. Findings Summary\n- **P1 - Critical:** 0\n- **P2 - Major:** 0\n- **P3 - Minor:** 0\n\n## 4. Findings\nNo open findings.\n\n## 5. Recommendations\n### Before Ship\n- None.\n\n### Before Next Milestone\n- None.\n\n### Longer-Term Improvements\n- None.\n\n## 6. Audit Details\n- **Files reviewed:** []\n- **Tests run:** []\n- **Results:** 0 passed, 0 failed, 0 skipped\n- **Tools used:** [\"static review\"]\n- **Method:** static review\n- **Environment:** test harness\n- **Reference:** test fixture\n- **Audited by:** fake_auditor\n- **Timestamp:** 2026-03-31T00:00:00+07:00\n\n## 7. Scope Exclusions\n- None.",
             }
         ]
     )
 
 
-class StaticBuilderProvider:
-    def __init__(self, config: StaticBuilderConfig = StaticBuilderConfig()):
+class StaticBuilderModule:
+    def __init__(self, config: StaticBuilderModuleConfig = StaticBuilderModuleConfig()):
         self.config = config
         self.calls = 0
-        self.last_tokens: dict[str, int] = {}
 
-    def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
+    def run(self, role: str, system: str, prompt: str, state: LoopState | None = None, cwd: str | None = None) -> str:
         index = min(self.calls, len(self.config.outputs) - 1)
         self.calls += 1
-        output = self.config.outputs[index]
-        self.last_tokens = {"input": len(prompt), "output": len(output), "total": len(prompt) + len(output)}
-        return output
+        return self.config.outputs[index]
 
     def health(self) -> bool:
         return True
 
+    def capabilities(self) -> set[str]:
+        return {"builder"}
 
-class StaticEvaluatorProvider:
-    def __init__(self, config: StaticEvaluatorConfig = StaticEvaluatorConfig()):
+
+class StaticAuditorModule:
+    def __init__(self, config: StaticAuditorModuleConfig = StaticAuditorModuleConfig()):
         self.config = config
         self.calls = 0
-        self.last_tokens: dict[str, int] = {}
 
-    def complete(self, system: str, prompt: str, state: LoopState | None = None) -> str:
+    def run(self, role: str, system: str, prompt: str, state: LoopState | None = None, cwd: str | None = None) -> str:
         index = min(self.calls, len(self.config.responses) - 1)
         self.calls += 1
-        response = _render_response(self.config.responses[index])
-        self.last_tokens = {"input": len(prompt), "output": len(response), "total": len(prompt) + len(response)}
-        return response
+        return _render_response(self.config.responses[index])
 
     def health(self) -> bool:
         return True
+
+    def capabilities(self) -> set[str]:
+        return {"auditor"}
 
 
 def _render_response(data: dict) -> str:
@@ -88,7 +88,7 @@ def _default_audit_body(summary: str, audit_verdict: str, next_steps: list[str])
         "- **P2 - Major:** 0\n"
         "- **P3 - Minor:** 0\n\n"
         "## 4. Findings\n"
-        "No detailed findings recorded in the static evaluator.\n\n"
+        "No detailed findings recorded in the static auditor.\n\n"
         "## 5. Recommendations\n"
         "### Before Ship\n"
         f"{next_step_lines}\n\n"
@@ -102,9 +102,9 @@ def _default_audit_body(summary: str, audit_verdict: str, next_steps: list[str])
         "- **Results:** 0 passed, 0 failed, 0 skipped\n"
         "- **Tools used:** [\"static review\"]\n"
         "- **Method:** static review\n"
-        "- **Environment:** static evaluator\n"
+        "- **Environment:** static auditor\n"
         "- **Reference:** test fixture\n"
-        "- **Audited by:** fake_evaluator\n"
+        "- **Audited by:** fake_auditor\n"
         "- **Timestamp:** 2026-03-31T00:00:00+07:00\n\n"
         "## 7. Scope Exclusions\n"
         "- None."
