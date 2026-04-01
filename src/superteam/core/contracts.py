@@ -182,7 +182,17 @@ class SessionMeta:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionMeta":
-        return cls(**data)
+        return cls(
+            session_id=data["session_id"],
+            pipeline=data.get("pipeline"),
+            builder_module=data["builder_module"],
+            auditor_module=data["auditor_module"],
+            status=data["status"],
+            created_at=data.get("created_at", 0.0),
+            ended_at=data.get("ended_at"),
+            iterations=data.get("iterations", 0),
+            final_score=data.get("final_score"),
+        )
 
 
 @dataclass

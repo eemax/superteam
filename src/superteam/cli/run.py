@@ -79,7 +79,6 @@ def run_command(
         )
     except Exception as exc:
         observer.emit("error", {"step": "run", "message": str(exc)})
-        session.finish("failed")
         if background:
             return
         raise typer.Exit(code=1) from exc

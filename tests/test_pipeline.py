@@ -5,7 +5,7 @@ import pytest
 from superteam.runtime.pipeline import (
     AgentSpec,
     PreparedRun,
-    _module_registry,
+    module_registry,
     instantiate_module,
     load_pipeline,
     prepare_run,
@@ -67,7 +67,7 @@ def test_instantiate_fake_builder_module():
 
 
 def test_module_registry_includes_codex_and_claude():
-    registry = _module_registry()
+    registry = module_registry()
     assert "codex" in registry
     assert "claude_code" in registry
 

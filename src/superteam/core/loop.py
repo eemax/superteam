@@ -19,7 +19,7 @@ from .contracts import (
     LoopState,
     Verdict,
 )
-from .modules import ModuleRole
+from .modules import Module, ModuleRole
 from .observe import Observer
 from .session import Session
 
@@ -322,8 +322,8 @@ def parse_verdict(
 
 
 def step_once(
-    builder,
-    auditor,
+    builder: Module,
+    auditor: Module,
     state: LoopState,
     config: LoopConfig = LoopConfig(),
     builder_system: str = "You are an expert builder. Execute the plan precisely.",
@@ -331,6 +331,7 @@ def step_once(
     artifact_store: ArtifactStore | None = None,
 ) -> tuple[LoopState, Verdict]:
     artifact_store = artifact_store or InlineArtifactStore()
+    t0 = time.time()
 
     output_raw = builder.run("builder", builder_system, build_builder_prompt(state, artifact_store), state)
     output, output_ref, output_preview = _maybe_spill(output_raw, state, artifact_store)
@@ -351,8 +352,8 @@ def step_once(
     verdict = parse_verdict(raw_verdict, config=config, auditor=auditor, system=auditor_system, state=next_state)
     record = IterationRecord(
         iteration=next_state.iteration,
-        ts_start=0.0,
-        ts_end=0.0,
+        ts_start=t0,
+        ts_end=time.time(),
         output_preview=output_preview or output[:OUTPUT_PREVIEW_LIMIT],
         output_ref=output_ref,
         verdict=verdict,
@@ -367,8 +368,8 @@ def step_once(
 
 
 def run_loop(
-    builder,
-    auditor,
+    builder: Module,
+    auditor: Module,
     state: LoopState,
     config: LoopConfig = LoopConfig(),
     observer: Observer | None = None,
@@ -406,7 +407,6 @@ def run_loop(
         state = replace(state, plan=state.goal)
 
     while state.iteration < config.max_iterations:
-        t0 = time.time()
         try:
             state, verdict = step_once(
                 wrapped_builder,
@@ -426,8 +426,6 @@ def run_loop(
             break
 
         last_verdict = verdict
-        stamped = replace(state.history[-1], ts_start=t0, ts_end=time.time())
-        state.history[-1] = stamped
 
         obs.emit(
             "output",
@@ -532,6 +530,8 @@ def _validate_verdict(verdict: Verdict) -> None:
         )
     if not isinstance(verdict.score, (int, float)):
         raise ValueError("Verdict score must be numeric")
+    if not (0.0 <= verdict.score <= 1.0):
+        raise ValueError(f"Verdict score must be between 0.0 and 1.0, got {verdict.score}")
     if not isinstance(verdict.metadata, dict):
         raise ValueError("Verdict metadata must be a mapping")
     if not isinstance(verdict.next_steps, list) or any(not isinstance(step, str) or not step.strip() for step in verdict.next_steps):

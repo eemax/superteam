@@ -60,10 +60,10 @@
 
 ## Validation
 
-- Install deps: `uv sync --extra cli --extra claude --extra dev`
+- Install deps: `uv sync --extra dev`
 - Run full tests: `uv run pytest`
 - Run a focused test file: `uv run pytest tests/test_pipeline.py`
-- Exercise the CLI locally: `uv run superteam run write-and-critique --goal "..."`
+- Exercise the CLI locally: `uv run superteam run code-review-loop --goal "..."`
 
 ## Documentation Expectations
 

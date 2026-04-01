@@ -1,12 +1,14 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# dependencies = ["superteam", "anthropic"]
+# dependencies = ["superteam"]
 # ///
 
-from superteam import ClaudeAPIProvider, ClaudeCodeProvider, LoopConfig, LoopState, Observer, Session, run_loop
+from superteam import LoopConfig, LoopState, Observer, Session, run_loop
+from superteam.modules.claude_code import ClaudeCodeConfig, ClaudeCodeModule
+from superteam.modules.codex import CodexModule
 
 
-session = Session.create(builder_provider="claude_code", eval_provider="claude_api", pipeline="script")
+session = Session.create(builder_module="claude_code", auditor_module="codex", pipeline="script")
 observer = Observer(session=session, stdout=True)
 
 initial = LoopState(
@@ -16,12 +18,14 @@ initial = LoopState(
 )
 
 final = run_loop(
-    ClaudeCodeProvider(),
-    ClaudeAPIProvider(),
+    ClaudeCodeModule(ClaudeCodeConfig()),
+    CodexModule(),
     initial,
     config=LoopConfig(max_iterations=3),
     observer=observer,
     session=session,
+    builder_module_name="claude_code",
+    auditor_module_name="codex",
 )
 
 print(final.output)

@@ -62,7 +62,7 @@ def load_pipeline(path_or_name: str) -> PipelineSpec:
     )
 
 
-def _module_registry() -> dict[str, tuple[type, type]]:
+def module_registry() -> dict[str, tuple[type, type]]:
     return {
         "claude_code": (ClaudeCodeConfig, ClaudeCodeModule),
         "codex": (CodexConfig, CodexModule),
@@ -72,7 +72,7 @@ def _module_registry() -> dict[str, tuple[type, type]]:
 
 
 def instantiate_module(agent: AgentSpec):
-    registry = _module_registry()
+    registry = module_registry()
     if agent.module not in registry:
         supported = ", ".join(sorted(registry))
         raise ValueError(f"Unsupported module '{agent.module}'. Available: {supported}")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 
 import typer
@@ -24,7 +25,7 @@ def result_command(
         typer.echo(
             json.dumps(
                 {
-                    "meta": meta.__dict__,
+                    "meta": asdict(meta),
                     "state": state.to_dict(),
                 },
                 indent=2,

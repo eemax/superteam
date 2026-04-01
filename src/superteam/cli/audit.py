@@ -18,10 +18,10 @@ def audit_command(
 
     content = sys.stdin.read()
 
-    from superteam.runtime.pipeline import _module_registry, AgentSpec, instantiate_module
+    from superteam.runtime.pipeline import module_registry, AgentSpec, instantiate_module
     from superteam.runtime.config import load_global_config, deep_merge
 
-    registry = _module_registry()
+    registry = module_registry()
     if module not in registry:
         supported = ", ".join(sorted(registry))
         typer.echo(f"Unknown module: {module}. Available: {supported}", err=True)

@@ -11,7 +11,6 @@ requires-python = ">=3.12"
 dependencies = ["typer>=0.12,<1", "PyYAML>=6.0,<7"]
 
 [project.optional-dependencies]
-cli = []
 dev = ["pytest>=8.0,<9"]
 
 [project.scripts]

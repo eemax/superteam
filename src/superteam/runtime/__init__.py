@@ -1,5 +1,5 @@
 from .config import deep_merge, filter_dataclass_kwargs, load_global_config
-from .pipeline import AgentSpec, PipelineSpec, PreparedRun, instantiate_module, load_pipeline, prepare_run
+from .pipeline import AgentSpec, PipelineSpec, PreparedRun, instantiate_module, load_pipeline, module_registry, prepare_run
 
 __all__ = [
     "AgentSpec",
@@ -9,6 +9,7 @@ __all__ = [
     "instantiate_module",
     "load_global_config",
     "load_pipeline",
+    "module_registry",
     "prepare_run",
     "PreparedRun",
 ]
