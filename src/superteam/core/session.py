@@ -7,7 +7,15 @@ import json
 import os
 import time
 
-from .contracts import InvocationRecord, LoopState, SessionMeta, Verdict, new_session_id
+from .contracts import (
+    InvocationRecord,
+    LoopState,
+    OUTPUT_INLINE_LIMIT,
+    OUTPUT_PREVIEW_LIMIT,
+    SessionMeta,
+    Verdict,
+    new_session_id,
+)
 
 
 SUPERTEAM_HOME_ENV = "SUPERTEAM_HOME"
@@ -207,13 +215,13 @@ class Session:
         index: int,
         field_name: str,
         text: str,
-        inline_limit: int = 8_000,
+        inline_limit: int = OUTPUT_INLINE_LIMIT,
     ) -> tuple[str, str | None]:
         if len(text) <= inline_limit:
             return text, None
         artifact_path = self.artifacts_dir / f"invocation-{index:04d}-{field_name}.txt"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(text, encoding="utf-8")
-        preview = text[:300] + ("…" if len(text) > 300 else "")
+        preview = text[:OUTPUT_PREVIEW_LIMIT] + ("…" if len(text) > OUTPUT_PREVIEW_LIMIT else "")
         inline = f"[artifact spilled to {artifact_path.name}]\n\n{preview}"
         return inline, str(artifact_path)

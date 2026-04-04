@@ -28,13 +28,13 @@ class ClaudeCodeModule:
         cmd = [
             "claude",
             "-p",
-            "--model",
-            self.config.model,
             "--output-format",
             "json",
             "--system-prompt",
             system,
         ]
+        if self.config.model:
+            cmd.extend(["--model", self.config.model])
         if self.config.max_turns is not None:
             logger.warning(
                 "max_turns=%d is set but Claude Code print mode does not support --max-turns; ignoring",
@@ -47,6 +47,7 @@ class ClaudeCodeModule:
         if self.config.permission_mode:
             cmd.extend(["--permission-mode", self.config.permission_mode])
 
+        # Intentionally forward full environment; child process needs API keys, PATH, etc.
         env = {**os.environ, **(self.config.env or {})}
         try:
             result = subprocess.run(
@@ -60,6 +61,10 @@ class ClaudeCodeModule:
             )
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(f"claude -p timed out after {self.config.timeout}s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "claude binary not found. Is Claude Code CLI installed and on PATH?"
+            ) from exc
 
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()

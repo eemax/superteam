@@ -77,7 +77,7 @@ def test_claude_code_module_builds_command(monkeypatch, tmp_path):
             model="claude-opus-4-1",
             timeout=42,
             allowed_tools=["Bash", "Edit"],
-            permission_mode="auto",
+            permission_mode="plan",
             bare=True,
         )
     )
@@ -91,6 +91,51 @@ def test_claude_code_module_builds_command(monkeypatch, tmp_path):
     assert "--permission-mode" in captured["cmd"]
     assert "--bare" in captured["cmd"]
     assert captured["input"] == "Task prompt"
+
+
+def test_claude_code_module_omits_model_when_none(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, input, capture_output, cwd, timeout, env, check):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, b'{"result":"ok"}', b"")
+
+    monkeypatch.setattr("superteam.modules.claude_code.runner.subprocess.run", fake_run)
+
+    module = ClaudeCodeModule(ClaudeCodeConfig())
+    module.run("builder", "sys", "prompt", cwd=str(tmp_path))
+
+    assert "--model" not in captured["cmd"]
+
+
+def test_claude_code_module_raises_on_missing_binary(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("No such file or directory: 'claude'")
+
+    monkeypatch.setattr("superteam.modules.claude_code.runner.subprocess.run", fake_run)
+
+    module = ClaudeCodeModule(ClaudeCodeConfig())
+    try:
+        module.run("builder", "sys", "prompt", cwd=str(tmp_path))
+    except RuntimeError as exc:
+        assert "claude binary not found" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_codex_module_raises_on_missing_binary(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("No such file or directory: 'codex'")
+
+    monkeypatch.setattr("superteam.modules.codex.runner.subprocess.run", fake_run)
+
+    module = CodexModule(CodexConfig())
+    try:
+        module.run("builder", "sys", "prompt", cwd=str(tmp_path))
+    except RuntimeError as exc:
+        assert "codex binary not found" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
 
 
 def test_claude_code_module_health(monkeypatch):

@@ -7,8 +7,8 @@
 ## Repo Map
 
 - `src/superteam/core/`: loop engine, state contracts, observer, and session persistence
-- `src/superteam/runtime/`: global config loading, pipeline parsing, provider instantiation
-- `src/superteam/providers/`: provider adapters plus testing doubles
+- `src/superteam/runtime/`: global config loading, pipeline parsing, module instantiation
+- `src/superteam/modules/`: module adapters plus testing doubles
 - `src/superteam/cli/`: Typer commands for run/watch/status/result/sessions/audit
 - `src/superteam/pipelines/`: built-in YAML pipeline specs
 - `tests/`: unit and smoke coverage
@@ -19,7 +19,7 @@
 ## Working Agreements
 
 - Start with `README.md` and `docs/architecture.md` before changing shared code.
-- Prefer deterministic tests that use fake/static providers instead of live services.
+- Prefer deterministic tests that use fake/static modules instead of live services.
 - Treat `LoopState`, `Verdict`, `SessionMeta`, and the on-disk session layout as stable contracts.
 - Keep CLI behavior, built-in pipelines, and docs aligned. If one changes, review the others.
 - Make small, coherent edits. Avoid mixing unrelated refactors into functional work.
@@ -40,9 +40,9 @@
 
 ### Pipeline and config changes
 
-- Pipeline loading and provider instantiation live in `src/superteam/runtime/pipeline.py`.
+- Pipeline loading and module instantiation live in `src/superteam/runtime/pipeline.py`.
 - Global config merge logic lives in `src/superteam/runtime/config.py`.
-- When adding a provider, wire it into the provider registry, package exports, docs, and tests.
+- When adding a **module**, wire it into the module registry, package exports, docs, and tests.
 
 ### CLI changes
 
@@ -56,7 +56,7 @@
 - For reviews, QA passes, or post-change concerns, capture findings in `agents/audits/`.
 - Suggested filenames:
   - `agents/plans/2026-03-28-session-resume-plan.md`
-  - `agents/audits/2026-03-28-provider-smoke-audit.md`
+  - `agents/audits/2026-03-28-module-smoke-audit.md`
 
 ## Validation
 

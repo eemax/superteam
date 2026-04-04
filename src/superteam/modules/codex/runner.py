@@ -40,6 +40,7 @@ class CodexModule:
             if self.config.extra_args:
                 cmd.extend(self.config.extra_args)
 
+            # Intentionally forward full environment; child process needs API keys, PATH, etc.
             env = os.environ.copy()
             try:
                 result = subprocess.run(
@@ -53,6 +54,10 @@ class CodexModule:
                 )
             except subprocess.TimeoutExpired as exc:
                 raise TimeoutError(f"codex exec timed out after {self.config.timeout}s") from exc
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "codex binary not found. Is Codex CLI installed and on PATH?"
+                ) from exc
 
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()

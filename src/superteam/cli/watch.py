@@ -19,6 +19,8 @@ def watch_command(
 
     while True:
         if session.events_path.exists():
+            if session.events_path.stat().st_size < offset:
+                offset = 0
             with session.events_path.open("r", encoding="utf-8") as handle:
                 handle.seek(offset)
                 for line in handle:
